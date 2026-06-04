@@ -13,6 +13,7 @@
 | 🎯 **Modo Kill** | `-k` / `--kill` | Lista y mata procesos sospechosos interactivamente |
 | 🔔 **Notificaciones** | `-n` / `--notifications` | Gestión interactiva de listeners, canales y purga de notificaciones |
 | 📡 **Monitor** | `-m` / `--monitor` | Escaneo en tiempo real cada N segundos |
+| 🕵️ **Pegasus detect** | `--pegasus-detect` | Detecta indicadores del spyware Pegasus en el dispositivo |
 | 🚨 **Zero-Day scan** | `--0days` | Busca PoCs/exploits activos en GitHub para tu dispositivo |
 | 🌐 **Deep scan** | `--0days --deep` | Búsqueda extendida en Reddit, Pastebin y foros especializados |
 | 📄 **Reporte** | `-r` / `--report` | Genera reporte Markdown en `reports/` |
@@ -114,6 +115,50 @@ Menú interactivo con 4 opciones:
 python3 cellinspector.py --monitor
 python3 cellinspector.py --monitor --interval 30   # cada 30 segundos
 ```
+
+### 🕵️ Pegasus Spyware Detection (`--pegasus-detect`)
+
+```bash
+python3 cellinspector.py --pegasus-detect
+```
+
+Analiza el dispositivo en busca de **6 tipos de indicadores** del spyware Pegasus de NSO Group:
+
+| Capa | Check | Método |
+|------|-------|--------|
+| 1️⃣ | **Procesos** | Busca procesos con nombres conocidos de Pegasus (`pegasus`, `pexd`, etc.) |
+| 2️⃣ | **Paquetes** | Lista paquetes instalados contra IOC database (`com.nso.pegasus`, `com.android.systemupdate`, etc.) |
+| 3️⃣ | **Archivos** | Verifica existencia de rutas conocidas (`/data/local/tmp/pex`, `/system/bin/pegasus`, etc.) |
+| 4️⃣ | **Módulos kernel** | Inspecciona módulos cargados (`lsmod`) en busca de `pegasus.ko`, `hide_proc.ko` |
+| 5️⃣ | **Hash matching** | Calcula SHA256 de system binaries y compara con hashes de muestras reales de Pegasus |
+| 6️⃣ | **C2 servers** | Verifica resolución DNS y conectividad con servidores de comando y control conocidos |
+
+#### IOC Database
+
+Los indicadores provienen de fuentes reales:
+
+| Fuente | Contenido |
+|--------|-----------|
+| 🗃️ `9aylas/Pegasus-samples` | Hashes SHA256 de muestras reales de Pegasus |
+| 🚫 `0n1cOn3/The-NSO-Blacklist` | IPs y dominios de servidores C2 de NSO Group |
+| 📚 Investigación pública | Paquetes, procesos, rutas de archivos y módulos kernel asociados a Pegasus |
+
+Salida:
+```
+🕵️ Pegasus Spyware Detector
+Checking device for indicators of compromise...
+
+  ✔ Running processes...
+  ✔ Installed packages...
+  ✔ Known file paths...
+  ✔ Kernel modules...
+  ✔ File hash matching...
+  ✔ C2 connectivity...
+
+✅ No Pegasus indicators detected.
+```
+
+**Nota:** Pegasus opera principalmente a nivel kernel y utiliza técnicas de ocultamiento avanzadas. Este escaneo no puede garantizar la ausencia de infección. Un resultado negativo no significa necesariamente que el dispositivo esté libre de Pegasus.
 
 ### 🚨 Zero-Day Exploit Scanner (`--0days`)
 
@@ -336,7 +381,8 @@ CellInspector/
 │   ├── 🎨 display.py                # UI rich (paneles, termómetro, reportes)
 │   ├── 📏 severity.py               # Enum Severity
 │   ├── 📖 guides.py                 # Guías localizadas paso a paso
-│   └── 🗃️ ioc_db.py                 # IOC database
+│   ├── 🗃️ ioc_db.py                 # IOC database general
+│   └── 🦠 pegasus_ioc.py            # IOC database de Pegasus (hashes, C2, packages, procesos)
 ├── modules/
 │   ├── 🌐 network_analyzer.py       # Conexiones de red
 │   ├── ⚙️ process_scanner.py        # Procesos
@@ -345,16 +391,17 @@ CellInspector/
 │   ├── 🔔 notification_analyzer.py  # Notificaciones + remediación interactiva
 │   ├── 🛡️ device_analyzer.py        # Seguridad del dispositivo
 │   ├── 🩹 remediation.py            # Matar procesos, watchers
-│   └── 🚨 zero_day_checker.py       # PoCs multilingüe: GitHub + deep web (Reddit, Pastebin, foros)
+│   ├── 🚨 zero_day_checker.py       # PoCs multilingüe: GitHub + deep web (Reddit, Pastebin, foros)
+│   └── 🦠 pegasus_detector.py       # Detector de spyware Pegasus (6 capas de detección)
 ├── reports/                         # 📄 Reportes Markdown
 └── data/                            # Datos externos
 ```
 
 ---
 
-## 🗃️ IOC Database
+## 🗃️ IOC Databases
 
-`core/ioc_db.py` contiene indicadores de compromiso:
+### `core/ioc_db.py` — IOC general
 
 | Categoría | Descripción |
 |-----------|-------------|
@@ -366,6 +413,18 @@ CellInspector/
 | 🔑 `SUSPICIOUS_PERMISSIONS` | Permisos de alto riesgo |
 | 📝 `SUSPICIOUS_LOGCAT_PATTERNS` | Patrones de log maliciosos |
 | ☠️ `KNOWN_MALWARE_PACKAGES` | Hashes de malware conocido |
+
+### `core/pegasus_ioc.py` — Pegasus Spyware
+
+| Categoría | Descripción |
+|-----------|-------------|
+| 🧬 `PEGASUS_SHA256` | Hashes SHA256 de muestras reales de Pegasus |
+| 📦 `PEGASUS_PACKAGES` | Paquetes asociados a Pegasus |
+| ⚙️ `PEGASUS_PROCESSES` | Nombres de procesos de Pegasus |
+| 📁 `PEGASUS_FILE_PATHS` | Rutas de archivo conocidas |
+| 🌐 `PEGASUS_C2_IPS` | IPs de servidores C2 (fuente: NSO Blacklist) |
+| 🌍 `PEGASUS_C2_DOMAINS` | Dominios C2 (fuente: NSO Blacklist) |
+| 🧩 `PEGASUS_KERNEL_MODULES` | Módulos kernel de Pegasus |
 
 ---
 

@@ -42,6 +42,7 @@ from modules.package_analyzer import analyze_packages
 from modules.logcat_monitor import analyze_logcat
 from modules.device_analyzer import gather_device_info, analyze_device_security
 from modules.zero_day_checker import run_zero_day_check
+from modules.pegasus_detector import run_pegasus_detect
 from modules.notification_analyzer import (
     analyze_notifications,
     run_notification_mode,
@@ -580,9 +581,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog="""
 Examples:
-  %(prog)s                          Run full device security scan
+   %(prog)s                          Run full device security scan
   %(prog)s --0days                  Scan GitHub for active PoC exploits
   %(prog)s --0days --deep           Deep scan: Reddit, Pastebin, forums + GitHub
+  %(prog)s --pegasus-detect         Scan device for Pegasus spyware indicators
   %(prog)s --wireless               Enable wireless ADB before scanning
   %(prog)s --verbose                Run scan with verbose output
   %(prog)s --monitor                Monitor device in real-time
@@ -647,6 +649,11 @@ Examples:
         help="Monitoring interval in seconds (default: 10)",
     )
     parser.add_argument(
+        "--pegasus-detect",
+        action="store_true",
+        help="Scan device for Pegasus spyware indicators of compromise",
+    )
+    parser.add_argument(
         "--no-banner",
         action="store_true",
         help="Skip the banner display",
@@ -663,6 +670,11 @@ Examples:
             print_banner()
         wait_for_device_or_exit()
         run_zero_day_check(deep=args.deep_scan)
+    elif args.pegasus_detect:
+        if not args.no_banner:
+            print_banner()
+        wait_for_device_or_exit()
+        run_pegasus_detect()
     elif args.fixall:
         run_fix_all(verbose=args.verbose, wireless=args.wireless)
     elif args.kill:
