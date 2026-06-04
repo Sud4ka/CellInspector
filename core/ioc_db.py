@@ -15,6 +15,62 @@ SUSPICIOUS_PACKAGES = [
     "com.lemon.lvoverseas",
 ]
 
+STALKERWARE_PACKAGES = [
+    "com.mspy",
+    "com.mspy2",
+    "com.flexispy",
+    "com.flexispy.android",
+    "com.cocospy",
+    "com.spyzie",
+    "com.spyic",
+    "com.umobix",
+    "com.hoverwatch",
+    "com.thetruthspy",
+    "com.cocospy.celltracker",
+    "com.hoverwatch.monitor",
+    "com.zerospy",
+    "com.highstermobile",
+    "com.lovedogs.phone",
+    "com.phonemanager.cleaner",
+    "com.callrecorder",
+    "com.spyhuman",
+    "com.monitors.phone",
+    "com.shadow.spy",
+    "com.android.monitor",
+    "com.advanced.spy",
+    "com.trackmyphone",
+    "com.phoneclz",
+    "com.spapp",
+    "com.mobistealth",
+    "com.mobispy",
+    "com.phone.spy",
+    "com.spy.app",
+    "com.smstracker",
+    "com.gpstracker",
+    "com.family.tracker",
+    "com.phone.tracker",
+    "com.bbmspy",
+    "com.whatsapp.tracker",
+    "com.snapchat.tracker",
+    "com.securetracking",
+    "com.privatesms.tracker",
+]
+
+STALKERWARE_PROCESSES = [
+    "mspy", "flexispy", "cocospy", "spyic", "umobix",
+    "hoverwatch", "thetruthspy", "spyzie", "zerospy",
+    "spapp", "mobistealth", "spyhuman", "shadowspy",
+    "callrecorder", "spytool", "monitorservice",
+    "tracker", "spyservice", "monitoring",
+]
+
+STALKERWARE_C2_DOMAINS = [
+    "mspy.com", "flexispy.com", "cocospy.com", "spyic.com",
+    "umobix.com", "hoverwatch.com", "thetruthspy.com",
+    "spyzie.com", "zerospy.com", "spapp.com",
+    "mobistealth.com", "spyhuman.com",
+]
+
 SUSPICIOUS_PROCESSES = [
     "frida", "busybox", "nc.", "netcat", "ncat",
     "tcpdump", "tshark", "wireshark", "mitmproxy",

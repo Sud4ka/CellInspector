@@ -6,6 +6,7 @@ from rich.layout import Layout
 from rich.live import Live
 from rich.text import Text
 from rich import box
+import json
 import time
 from typing import List, Optional
 from core.severity import Severity
@@ -267,5 +268,65 @@ def generate_markdown_report(
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(content)
+
+    return output_path
+
+
+def generate_json_report(
+    device_info: dict,
+    findings: List[tuple],
+    output_path: str,
+):
+    severity_map = {
+        Severity.INFO: "info",
+        Severity.LOW: "low",
+        Severity.MEDIUM: "medium",
+        Severity.HIGH: "high",
+        Severity.CRITICAL: "critical",
+    }
+
+    report = {
+        "tool": "CellInspector",
+        "version": "1.1.0",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "device": {
+            "manufacturer": device_info.get("Manufacturer", "Unknown"),
+            "model": device_info.get("Model", "Unknown"),
+            "android_version": device_info.get("Android Version", "Unknown"),
+            "api_level": device_info.get("API Level", "?"),
+            "security_patch": device_info.get("Security Patch", "Unknown"),
+            "serial": device_info.get("Serial", "Unknown"),
+            "build_type": device_info.get("Build Type", "Unknown"),
+        },
+        "summary": {
+            "total": len(findings),
+            "critical": sum(1 for f in findings if f[0] == Severity.CRITICAL),
+            "high": sum(1 for f in findings if f[0] == Severity.HIGH),
+            "medium": sum(1 for f in findings if f[0] == Severity.MEDIUM),
+            "low": sum(1 for f in findings if f[0] == Severity.LOW),
+            "info": sum(1 for f in findings if f[0] == Severity.INFO),
+        },
+        "findings": [],
+    }
+
+    for finding in findings:
+        if len(finding) < 4:
+            continue
+        sev, title, desc, category = finding[0], finding[1], finding[2], finding[3]
+        details = finding[4] if len(finding) > 4 else None
+        recommendation = finding[5] if len(finding) > 5 else None
+
+        report["findings"].append({
+            "severity": severity_map.get(sev, "unknown"),
+            "severity_value": sev.value,
+            "title": title,
+            "description": desc,
+            "category": category,
+            "details": details,
+            "recommendation": recommendation,
+        })
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
 
     return output_path

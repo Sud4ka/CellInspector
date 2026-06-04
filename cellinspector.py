@@ -7,6 +7,8 @@ import atexit
 import argparse
 from typing import List, Tuple, Optional
 
+VERSION = "1.1.0"
+
 from core.display import (
     console,
     print_banner,
@@ -15,6 +17,7 @@ from core.display import (
     print_summary_table,
     create_progress,
     generate_markdown_report,
+    generate_json_report,
 )
 from core.severity import Severity
 from core.adb_client import (
@@ -43,6 +46,7 @@ from modules.logcat_monitor import analyze_logcat
 from modules.device_analyzer import gather_device_info, analyze_device_security
 from modules.zero_day_checker import run_zero_day_check
 from modules.pegasus_detector import run_pegasus_detect
+from modules.vpn_detector import analyze_vpn_proxy
 from modules.notification_analyzer import (
     analyze_notifications,
     run_notification_mode,
@@ -170,7 +174,7 @@ def run_module(
         return []
 
 
-def run_scan(verbose: bool = False) -> Tuple[List[Tuple], dict]:
+def run_scan(verbose: bool = False, offline: bool = False) -> Tuple[List[Tuple], dict]:
     device_info = gather_device_info()
     console.print("\n[bold cyan]\U0001f4f1 Device Connected[/]")
     print_device_info_table(device_info)
@@ -181,7 +185,7 @@ def run_scan(verbose: bool = False) -> Tuple[List[Tuple], dict]:
     summary = []
 
     with create_progress() as progress:
-        task = progress.add_task("[cyan]Scanning device...[/]", total=6)
+        task = progress.add_task("[cyan]Scanning device...[/]", total=7)
 
         modules = [
             ("Network Analysis", analyze_network),
@@ -189,7 +193,8 @@ def run_scan(verbose: bool = False) -> Tuple[List[Tuple], dict]:
             ("Package Analysis", analyze_packages),
             ("Logcat Analysis", lambda: analyze_logcat()),
             ("Notification Analysis", analyze_notifications),
-            ("Device Security", analyze_device_security),
+            ("Device Security", lambda: analyze_device_security(offline=offline)),
+            ("VPN/Proxy Detection", analyze_vpn_proxy),
         ]
 
         for name, func in modules:
@@ -575,6 +580,110 @@ def run_monitor(verbose: bool = False, interval: int = 10, wireless: bool = Fals
         console.print("\n[bold red]Monitoring stopped.[/]")
 
 
+def run_live_logcat():
+    print_banner()
+    wait_for_device_or_exit()
+    console.print("\n[bold cyan]\U0001f4e1 Live Logcat Monitor[/]")
+    console.print("[dim]Streaming real-time logcat. Ctrl+C to stop.[/]\n")
+    try:
+        import subprocess
+        proc = subprocess.Popen(
+            ["adb", "logcat", "-v", "time"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            if "FATAL EXCEPTION" in line or "CRASH" in line.upper():
+                console.print(f"[bold red]{line.strip()}[/]")
+            elif "ANR" in line:
+                console.print(f"[bold orange1]{line.strip()}[/]")
+            elif "Error" in line or "error" in line:
+                console.print(f"[yellow]{line.strip()}[/]")
+            elif "frida" in line.lower() or "ptrace" in line.lower():
+                console.print(f"[bold red]\U0001f6a8 {line.strip()}[/]")
+            else:
+                console.print(f"[dim]{line.strip()}[/]")
+    except KeyboardInterrupt:
+        console.print("\n[bold red]Live logcat stopped.[/]")
+    except FileNotFoundError:
+        console.print("[red]ADB not found. Ensure adb is installed and in PATH.[/]")
+
+
+def run_all(verbose: bool = False, wireless: bool = False, offline: bool = False, json_output: bool = False):
+    global _device_locale
+    print_banner()
+    wait_for_device_or_exit()
+
+    if wireless:
+        if not setup_wireless():
+            console.print("[yellow]Continuando en modo USB...[/]")
+
+    detected = get_device_locale()
+    if detected:
+        _device_locale = detected
+        lang_name = {"es": "Espa\u00f1ol", "en": "English", "pt": "Portugu\u00eas", "fr": "Fran\u00e7ais"}.get(detected, detected)
+        console.print(f"[dim]Idioma del dispositivo: {lang_name} ({detected})[/]")
+
+    all_findings, device_info = run_scan(verbose=verbose)
+
+    if not offline:
+        console.print("\n[bold cyan]\U0001f50d Extended Analysis (requires internet)[/]")
+        from modules.zero_day_checker import run_zero_day_check
+        from modules.pegasus_detector import run_pegasus_detect
+
+        console.print("\n[bold]--- Zero-Day Scan ---[/]")
+        run_zero_day_check(deep=False)
+
+        console.print("\n[bold]--- Pegasus Detection ---[/]")
+        run_pegasus_detect()
+
+    vpn_findings = analyze_vpn_proxy()
+    all_findings.extend(vpn_findings)
+    if verbose:
+        for f in vpn_findings:
+            if len(f) >= 4 and f[0] >= Severity.LOW:
+                print_finding(f[0], f[1], f[2], details=f[4] if len(f) > 4 else None)
+
+    print_summary_table([(f[0], f[1], f[3]) for f in all_findings if f and len(f) >= 4])
+
+    total = len(all_findings)
+    if total == 0:
+        console.print("[bold green]\u2705 Device appears clean! No issues detected.[/]")
+    else:
+        critical = sum(1 for f in all_findings if len(f) >= 4 and f[0] == Severity.CRITICAL)
+        high = sum(1 for f in all_findings if len(f) >= 4 and f[0] == Severity.HIGH)
+        medium = sum(1 for f in all_findings if len(f) >= 4 and f[0] == Severity.MEDIUM)
+        low = sum(1 for f in all_findings if len(f) >= 4 and f[0] == Severity.LOW)
+        console.print(f"\n[bold]Final Report:[/]")
+        if critical:
+            console.print(f"  [red]\U0001f6a8 Critical: {critical}[/]")
+        if high:
+            console.print(f"  [orange_red1]\u274c High: {high}[/]")
+        if medium:
+            console.print(f"  [orange1]\u26a0\ufe0f Medium: {medium}[/]")
+        if low:
+            console.print(f"  [yellow]\u26a0\ufe0f Low: {low}[/]")
+        console.print(f"  [cyan]\u2139\ufe0f Total: {total}[/]")
+
+    if json_output:
+        report_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+        os.makedirs(report_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        json_path = os.path.join(report_dir, f"cellinspector_report_{timestamp}.json")
+        generate_json_report(device_info, all_findings, json_path)
+        console.print(f"\n[green]\u2713 JSON report saved:[/] [cyan]{json_path}[/]")
+
+    manual_findings = [f for f in all_findings if len(f) >= 4 and f[0] >= Severity.LOW]
+    render_manual_guides(manual_findings)
+
+    console.print("\n[dim]Full analysis completed by CellInspector[/]")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CellInspector - Mobile Device Security Auditor",
@@ -585,6 +694,10 @@ Examples:
   %(prog)s --0days                  Scan GitHub for active PoC exploits
   %(prog)s --0days --deep           Deep scan: Reddit, Pastebin, forums + GitHub
   %(prog)s --pegasus-detect         Scan device for Pegasus spyware indicators
+  %(prog)s --all                    Run full scan + zero-day + pegasus + VPN/Proxy
+  %(prog)s --all --json             Full scan with JSON report export
+  %(prog)s --all --offline          Full scan without internet-dependent checks
+  %(prog)s --live                   Real-time logcat streaming with alerts
   %(prog)s --wireless               Enable wireless ADB before scanning
   %(prog)s --verbose                Run scan with verbose output
   %(prog)s --monitor                Monitor device in real-time
@@ -654,6 +767,33 @@ Examples:
         help="Scan device for Pegasus spyware indicators of compromise",
     )
     parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="run_all",
+        help="Run full analysis: security scan + zero-day + Pegasus + VPN/Proxy",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Export findings as JSON report (use with --all or standalone)",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Skip all internet-dependent checks (C2, GitHub, DuckDuckGo)",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Stream real-time logcat with alert highlighting",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Show version and exit",
+    )
+    parser.add_argument(
         "--no-banner",
         action="store_true",
         help="Skip the banner display",
@@ -664,6 +804,19 @@ Examples:
     atexit.register(cleanup_exit)
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
+    if args.version:
+        console.print(f"[bold cyan]CellInspector[/] [white]v{VERSION}[/]")
+        console.print("[dim]Mobile Device Security Auditor[/]")
+        return
+
+    if args.live:
+        run_live_logcat()
+        return
+
+    if args.run_all:
+        run_all(verbose=args.verbose, wireless=args.wireless, offline=args.offline, json_output=args.json_output)
+        return
 
     if args.zero_days:
         if not args.no_banner:
