@@ -122,7 +122,42 @@ Ejemplo de hallazgo en JSON:
 }
 ```
 
-### 🕵️ MVT-Powered Detection (`--mvt-check`)
+### 🎯 Sistema de Confianza (Confidence Scoring)
+
+CellInspector clasifica cada hallazgo por **nivel de confianza** según el tipo de indicador, evitando falsos positivos con procesos o nombres genéricos.
+
+### Niveles
+
+| Nivel | Score | Tipo de IOC | Ejemplo |
+|-------|-------|-------------|---------|
+| 🔴 **CRITICAL** | 90-100 | SHA256 hash match | Archivo cuyo hash coincide con muestra conocida de Pegasus |
+| 🟠 **HIGH** | 70-89 | Package exacto, dominio/IP C2 exacto | `com.nso.pegasus` instalado, dominio C2 resuelve |
+| 🟡 **MEDIUM** | 40-69 | Ruta de archivo, URL, cert hash | `/data/local/tmp/pex` existe |
+| 🟢 **LOW** | 10-39 | Nombre de proceso (>8 chars), nombre de archivo | Proceso con nombre sospechoso pero no concluyente |
+| 🔵 **INFO** | 5-9 | Proceso conocido de Android, nombres cortos (4-7) | `gatekeeperd` (proceso legítimo de autenticación) |
+| ⚪ **SKIP** | 0 | Nombres <4 chars, excluidos | `bh` (demasiado genérico, se omite) |
+
+### Reglas de matching
+
+- **Procesos < 4 caracteres**: se omiten completamente (previene FPs como `bh`, `su`, `sh`)
+- **Procesos conocidos de Android**: clasificados como INFO con nota aclaratoria (e.g. `gatekeeperd`, `surfaceflinger`, `zygote`)
+- **Packages**: comparación exacta (`package:com.google.android.network` ≠ `com.google.android.networkstack`)
+- **Recomendaciones contextuales**: según el nivel de confianza, la recomendación va desde "Informativo, no requiere acción" hasta "Factory reset inmediato"
+
+### Ejemplo
+
+```
+  🟢 LOW (35/100) 🔍 Process 'system_pegasus' matches Pegasus indicator
+          Running process: u:0_a123 12345 1 0 0 system_pegasus
+          
+  🔴 CRITICAL (95/100) 💥 SHA256 match on /system/bin/app_process
+          Hash a1b2c3... matches known Pegasus sample
+          
+  Overall: HIGH (95/100)
+  Recommendation: High-confidence indicators detected. Factory reset recommended.
+```
+
+## 🕵️ MVT-Powered Detection (`--mvt-check`)
 
 ```bash
 cellinspector.py --mvt-check
@@ -150,8 +185,11 @@ Utiliza los indicadores STIX2 del proyecto **MVT (Mobile Verification Toolkit)**
 **Cómo funciona:**
 1. Descarga archivos `.stix2` desde los repositorios oficiales de MVT y AmnestyTech
 2. Parsea los patrones STIX2 (dominios, IPs, hashes SHA256, package names, rutas de archivo)
-3. Cruza contra el dispositivo vía ADB (procesos, paquetes, archivos, hashes de system binaries)
-4. Muestra qué familia de malware coincide y cuántos indicadores se detectaron
+3. Clasifica cada IOC por tipo con el sistema de **confianza** (SHA256 → CRITICAL, proceso genérico → LOW)
+4. Cruza contra el dispositivo vía ADB (procesos, paquetes, archivos, hashes de system binaries)
+5. Muestra overall confidence score y recomendación contextual
+
+**Importante:** Los archivos STIX2 contienen indicadores observacionales (procesos vistos durante investigaciones) y no todos son firmas exclusivas de malware. CellInspector aplica **filtros de exclusión** (procesos conocidos de Android, nombres cortos) y **confidence scoring** para minimizar falsos positivos.
 
 **Crédito:** Los indicadores STIX2 son mantenidos por el proyecto [MVT](https://github.com/mvt-project/mvt) de [Amnesty International](https://www.amnesty.org). Distribuidos bajo licencia MIT.
 
@@ -260,39 +298,19 @@ python3 cellinspector.py --pegasus-detect
 
 Analiza el dispositivo en busca de **6 tipos de indicadores** del spyware Pegasus de NSO Group:
 
-| Capa | Check | Método |
-|------|-------|--------|
-| 1️⃣ | **Procesos** | Busca procesos con nombres conocidos de Pegasus (`pegasus`, `pexd`, etc.) |
-| 2️⃣ | **Paquetes** | Lista paquetes instalados contra IOC database (`com.nso.pegasus`, `com.android.systemupdate`, etc.) |
-| 3️⃣ | **Archivos** | Verifica existencia de rutas conocidas (`/data/local/tmp/pex`, `/system/bin/pegasus`, etc.) |
-| 4️⃣ | **Módulos kernel** | Inspecciona módulos cargados (`lsmod`) en busca de `pegasus.ko`, `hide_proc.ko` |
-| 5️⃣ | **Hash matching** | Calcula SHA256 de system binaries y compara con hashes de muestras reales de Pegasus |
-| 6️⃣ | **C2 servers** | Verifica resolución DNS y conectividad con servidores de comando y control conocidos |
+| Capa | Check | Método | Confianza |
+|------|-------|--------|-----------|
+| 1️⃣ | **Procesos** | Busca procesos con nombres conocidos de Pegasus (`pegasus`, `pexd`, etc.) | LOW (filtra procesos conocidos de Android y nombres <4 chars) |
+| 2️⃣ | **Paquetes** | Lista paquetes instalados contra IOC database (match exacto) | HIGH |
+| 3️⃣ | **Archivos** | Verifica existencia de rutas conocidas (`/data/local/tmp/pex`) | MEDIUM |
+| 4️⃣ | **Módulos kernel** | Inspecciona módulos cargados (`lsmod`) | MEDIUM |
+| 5️⃣ | **Hash matching** | SHA256 de system binaries contra hashes de muestras reales | CRITICAL |
+| 6️⃣ | **C2 servers** | Resolución DNS y conectividad con servidores C2 | HIGH |
 
-#### IOC Database
-
-Los indicadores provienen de fuentes reales:
-
-| Fuente | Contenido |
-|--------|-----------|
-| 🗃️ `9aylas/Pegasus-samples` | Hashes SHA256 de muestras reales de Pegasus |
-| 🚫 `0n1cOn3/The-NSO-Blacklist` | IPs y dominios de servidores C2 de NSO Group |
-| 📚 Investigación pública | Paquetes, procesos, rutas de archivos y módulos kernel asociados a Pegasus |
-
-Salida:
-```
-🕵️ Pegasus Spyware Detector
-Checking device for indicators of compromise...
-
-  ✔ Running processes...
-  ✔ Installed packages...
-  ✔ Known file paths...
-  ✔ Kernel modules...
-  ✔ File hash matching...
-  ✔ C2 connectivity...
-
-✅ No Pegasus indicators detected.
-```
+Cada hallazgo se muestra con su nivel de confianza y la recomendación es contextual:
+- **CRITICAL/HIGH**: Factory reset + cambio de contraseñas
+- **MEDIUM**: Investigar más antes de concluir
+- **LOW**: Probable falso positivo, monitorear
 
 **Nota:** Pegasus opera principalmente a nivel kernel y utiliza técnicas de ocultamiento avanzadas. Este escaneo no puede garantizar la ausencia de infección. Un resultado negativo no significa necesariamente que el dispositivo esté libre de Pegasus.
 
@@ -533,7 +551,8 @@ CellInspector/
 │   ├── 🦠 pegasus_ioc.py            # IOC database de Pegasus (hashes, C2, packages, procesos)
 │   ├── 🔄 ioc_updater.py            # Auto-update: MalwareBazaar, AlienVault OTX, CISA
 │   ├── 🛡️ vt_integration.py         # VirusTotal API v3 (hash lookup con rate limiting)
-│   └── 🧬 mitre_attack.py           # MITRE ATT&CK for Mobile mapping (T1437, T1412, etc.)
+│   ├── 🧬 mitre_attack.py           # MITRE ATT&CK for Mobile mapping (T1437, T1412, etc.)
+│   └── 🎯 confidence.py             # Confidence scoring engine (HIGH/LOW/SKIP según tipo de IOC)
 ├── modules/
 │   ├── 🌐 network_analyzer.py       # Conexiones de red
 │   ├── ⚙️ process_scanner.py        # Procesos
@@ -552,6 +571,24 @@ CellInspector/
 ```
 
 ---
+
+## 🎯 Confidence Engine
+
+### `core/confidence.py`
+
+Motor de confianza que clasifica cada indicador por tipo y valor:
+
+| Tipo IOC | Confianza Base | Reglas Especiales |
+|----------|---------------|-------------------|
+| `sha256` / `sha1` / `md5` | **HIGH** (95) | — |
+| `app_id_exact` | **HIGH** (85) | Match exacto contra `package:` |
+| `domain_exact` / `ip_exact` | **HIGH** (80) | — |
+| `file_path` | **MEDIUM** (60) | — |
+| `process_name` | **LOW** (35) | <4 chars → SKIP; en `KNOWN_ANDROID_PROCESSES` → INFO (5); <6 chars → LOW (10); <8 → LOW (20) |
+| `file_name` | **LOW** (30) | <4 chars → SKIP; <6 → LOW (15) |
+| `url` | **MEDIUM** (50) | — |
+
+**Known Android processes** (90 entradas): `gatekeeperd`, `surfaceflinger`, `zygote`, `servicemanager`, `adbd`, `logd`, `netd`, `vold`, etc. No se marcan como sospechosos.
 
 ## 🗃️ IOC Databases
 

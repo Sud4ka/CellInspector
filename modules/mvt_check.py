@@ -9,10 +9,14 @@ from urllib.error import URLError
 from core.display import console
 from core.adb_client import shell_command
 from core.severity import Severity
+from core.confidence import (
+    classify_ioc_type, compute_confidence, should_skip,
+    format_confidence_badge, confidence_from_result, get_recommendation,
+    KNOWN_ANDROID_PROCESSES,
+)
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 MVT_DIR = os.path.join(DATA_DIR, "mvt_indicators")
-INDICATORS_YAML_URL = "https://raw.githubusercontent.com/mvt-project/mvt-indicators/main/indicators.yaml"
 
 STIX2_REPOS = [
     {
@@ -104,12 +108,26 @@ PATTERN_FILE_PATH = re.compile(r"\[file:path='([^']+)'\]")
 PATTERN_URL = re.compile(r"\[url:value='([^']+)'\]")
 PATTERN_ANDROID_PROP = re.compile(r"\[android-property:name='([^']+)'\]")
 
+PROCESS_PATTERNS = [
+    ("process_name", PATTERN_PROCESS),
+    ("app_id_exact", PATTERN_APP_ID),
+    ("sha256", PATTERN_SHA256),
+    ("sha1", PATTERN_SHA1),
+    ("md5", PATTERN_MD5),
+    ("domain_exact", PATTERN_DOMAIN),
+    ("ip_exact", PATTERN_IP),
+    ("file_path", PATTERN_FILE_PATH),
+    ("file_name", PATTERN_FILE_NAME),
+    ("url", PATTERN_URL),
+    ("android_property", PATTERN_ANDROID_PROP),
+]
+
 
 def _ensure_dir():
     os.makedirs(MVT_DIR, exist_ok=True)
 
 
-def _fetch_url(url: str, timeout: int = 30) -> Optional[bytes]:
+def _fetch_url(url: str, timeout: int = 60) -> Optional[bytes]:
     try:
         req = Request(url, headers={"User-Agent": "CellInspector/1.0"})
         with urlopen(req, timeout=timeout) as resp:
@@ -140,21 +158,11 @@ def _download_stix2(source: dict) -> Optional[str]:
     return local_path
 
 
-def _parse_stix2(filepath: str) -> dict:
+def _parse_stix2(filepath: str) -> Optional[dict]:
     result = {
         "malware_name": "Unknown",
-        "domains": [],
-        "ips": [],
-        "sha256": [],
-        "md5": [],
-        "sha1": [],
-        "app_ids": [],
-        "processes": [],
-        "file_names": [],
-        "file_paths": [],
-        "urls": [],
-        "android_properties": [],
-        "total_indicators": 0,
+        "indicators": [],
+        "total_parsed": 0,
     }
 
     try:
@@ -163,7 +171,7 @@ def _parse_stix2(filepath: str) -> dict:
         bundle = json.loads(raw)
     except (json.JSONDecodeError, OSError) as e:
         console.print(f"  [red]Error parsing {filepath}: {e}[/]")
-        return result
+        return None
 
     objects = bundle.get("objects", [])
 
@@ -179,182 +187,59 @@ def _parse_stix2(filepath: str) -> dict:
         if not pattern:
             continue
 
-        result["total_indicators"] += 1
+        matched = False
+        for ioc_type, regex in PROCESS_PATTERNS:
+            m = regex.search(pattern)
+            if m:
+                value = m.group(1)
+                score, label = compute_confidence(ioc_type, value)
+                if label == "SKIP":
+                    matched = True
+                    break
+                result["indicators"].append({
+                    "type": ioc_type,
+                    "value": value,
+                    "pattern": pattern,
+                    "confidence_score": score,
+                    "confidence_label": label,
+                })
+                matched = True
+                break
 
-        m = PATTERN_DOMAIN.search(pattern)
-        if m:
-            result["domains"].append(m.group(1).lower())
-            continue
+        if matched:
+            result["total_parsed"] += 1
 
-        m = PATTERN_IP.search(pattern)
-        if m:
-            result["ips"].append(m.group(1))
-            continue
-
-        m = PATTERN_SHA256.search(pattern)
-        if m:
-            result["sha256"].append(m.group(1).lower())
-            continue
-
-        m = PATTERN_MD5.search(pattern)
-        if m:
-            result["md5"].append(m.group(1).lower())
-            continue
-
-        m = PATTERN_SHA1.search(pattern)
-        if m:
-            result["sha1"].append(m.group(1).lower())
-            continue
-
-        m = PATTERN_APP_ID.search(pattern)
-        if m:
-            result["app_ids"].append(m.group(1))
-            continue
-
-        m = PATTERN_PROCESS.search(pattern)
-        if m:
-            result["processes"].append(m.group(1).lower())
-            continue
-
-        m = PATTERN_FILE_NAME.search(pattern)
-        if m:
-            result["file_names"].append(m.group(1))
-            continue
-
-        m = PATTERN_FILE_PATH.search(pattern)
-        if m:
-            result["file_paths"].append(m.group(1))
-            continue
-
-        m = PATTERN_URL.search(pattern)
-        if m:
-            result["urls"].append(m.group(1))
-            continue
-
-        m = PATTERN_ANDROID_PROP.search(pattern)
-        if m:
-            result["android_properties"].append(m.group(1))
-            continue
-
-    result["domains"] = list(set(result["domains"]))
-    result["ips"] = list(set(result["ips"]))
-    result["sha256"] = list(set(result["sha256"]))
-    result["app_ids"] = list(set(result["app_ids"]))
+    result["by_type"] = {}
+    for ind in result["indicators"]:
+        t = ind["type"]
+        result["by_type"][t] = result["by_type"].get(t, 0) + 1
 
     return result
 
 
-def _check_processes(iocs: list) -> list:
-    findings = []
-    raw = shell_command("ps -A 2>/dev/null || ps 2>/dev/null")
-    if not raw:
-        return findings
-    raw_lower = raw.lower()
-    for source in iocs:
-        for proc in source.get("processes", []):
-            if proc in raw_lower:
-                findings.append((
-                    Severity.CRITICAL,
-                    f"[MVT] Process match: {proc}",
-                    f"Process '{proc}' matches indicator from {source['malware_name']}",
-                    f"MVT-{source['malware_name']}",
-                ))
-    return findings
+def _classify_findings(findings: list) -> tuple:
+    if not findings:
+        return ("CLEAN", 100)
+
+    max_score = max(f["confidence_score"] for f in findings)
+    high_count = sum(1 for f in findings if f["confidence_label"] in ("HIGH", "CRITICAL"))
+    medium_count = sum(1 for f in findings if f["confidence_label"] == "MEDIUM")
+    low_count = sum(1 for f in findings if f["confidence_label"] == "LOW")
+
+    if high_count > 0:
+        return ("CRITICAL" if max_score >= 90 else "HIGH", max_score)
+    if medium_count > 0:
+        return ("MEDIUM", max_score)
+    if low_count > 0:
+        return ("LOW", max_score)
+    return ("INFO", max_score)
 
 
-def _check_packages(iocs: list) -> list:
-    findings = []
-    raw = shell_command("pm list packages 2>/dev/null")
-    if not raw:
-        return findings
-    raw_lower = raw.lower()
-    for source in iocs:
-        for pkg in source.get("app_ids", []):
-            if pkg.lower() in raw_lower:
-                findings.append((
-                    Severity.CRITICAL,
-                    f"[MVT] Package match: {pkg}",
-                    f"Package '{pkg}' matches indicator from {source['malware_name']}",
-                    f"MVT-{source['malware_name']}",
-                ))
-    return findings
+def run_mvt_check():
+    console.print("\n[bold red]\u2699\ufe0f MVT-Powered Spyware Detection[/]")
+    console.print("[dim]Using STIX2 indicators from MVT project (Amnesty International)[/]\n")
 
-
-def _check_file_paths(iocs: list) -> list:
-    findings = []
-    for source in iocs:
-        for fpath in source.get("file_paths", []):
-            try:
-                raw = shell_command(f"ls -la {fpath} 2>/dev/null")
-                if raw and "No such file" not in raw:
-                    findings.append((
-                        Severity.CRITICAL,
-                        f"[MVT] File path match: {fpath}",
-                        f"Path '{fpath}' exists and matches indicator from {source['malware_name']}",
-                        f"MVT-{source['malware_name']}",
-                    ))
-            except Exception:
-                continue
-    return findings
-
-
-def _check_files(iocs: list) -> list:
-    findings = []
-    for source in iocs:
-        for fname in source.get("file_names", []):
-            try:
-                raw = shell_command(f"find /data /system /vendor -name '{fname}' 2>/dev/null | head -3")
-                if raw and raw.strip():
-                    findings.append((
-                        Severity.CRITICAL,
-                        f"[MVT] File name match: {fname}",
-                        f"File '{fname}' found on device, matches {source['malware_name']}",
-                        f"MVT-{source['malware_name']}",
-                    ))
-            except Exception:
-                continue
-    return findings
-
-
-def _check_hashes(iocs: list) -> list:
-    findings = []
-    all_hashes = {}
-    for source in iocs:
-        for h in source.get("sha256", []):
-            all_hashes[h] = source["malware_name"]
-
-    paths_to_check = [
-        "/system/bin/app_process",
-        "/system/bin/app_process32",
-        "/system/bin/app_process64",
-    ]
-    for path in paths_to_check:
-        try:
-            raw = shell_command(f"sha256sum {path} 2>/dev/null")
-            if not raw:
-                continue
-            parts = raw.strip().split()
-            if not parts:
-                continue
-            file_hash = parts[0].lower()
-            if file_hash in all_hashes:
-                findings.append((
-                    Severity.CRITICAL,
-                    f"[MVT] Hash match: {path}",
-                    f"SHA256 of '{path}' matches {all_hashes[file_hash]} indicator",
-                    f"MVT-{all_hashes[file_hash]}",
-                ))
-        except Exception:
-            continue
-
-    return findings
-
-
-def run_mvt_check(force_download: bool = False):
-    console.print("\n[bold red]\U0001f575\ufe0f MVT-Powered Spyware Detection[/]")
-    console.print("[dim]Using indicators from Mobile Verification Toolkit (Amnesty International)[/]\n")
-
-    if not os.path.exists(MVT_DIR) or force_download:
+    if not os.path.exists(MVT_DIR):
         console.print("[bold]Downloading STIX2 indicator files...[/]")
         _ensure_dir()
         for src in STIX2_REPOS:
@@ -366,62 +251,130 @@ def run_mvt_check(force_download: bool = False):
         local_path = os.path.join(MVT_DIR, src["local"])
         if os.path.exists(local_path):
             parsed = _parse_stix2(local_path)
-            if parsed["total_indicators"] > 0:
+            if parsed and parsed["total_parsed"] > 0:
                 ioc_sources.append(parsed)
-                console.print(f"  [green]\u2713[/] {parsed['malware_name']}: {parsed['total_indicators']} indicators "
-                              f"({len(parsed['domains'])} domains, {len(parsed['app_ids'])} apps, "
-                              f"{len(parsed['sha256'])} hashes)")
+                by_type = parsed.get("by_type", {})
+                details = ", ".join(f"{k}: {v}" for k, v in sorted(by_type.items()))
+                console.print(f"  [green]\u2713[/] {parsed['malware_name']}: {parsed['total_parsed']} IOCs ({details})")
             else:
-                console.print(f"  [yellow]\u2717[/] {src['name']}: failed to parse or empty")
+                console.print(f"  [yellow]\u2717[/] {src['name']}: no usable indicators")
 
     if not ioc_sources:
         console.print("[red]\u274c No STIX2 indicators loaded.[/]")
-        console.print("[yellow]Try running the command again for fresh downloads.[/]")
+        console.print("[yellow]Run again or check internet connectivity.[/]")
         return
 
-    total_iocs = sum(s["total_indicators"] for s in ioc_sources)
-    console.print(f"\n[bold]Loaded {len(ioc_sources)} malware families, {total_iocs} total IOCs[/]\n")
+    total_iocs = sum(s["total_parsed"] for s in ioc_sources)
+    total_high = sum(1 for s in ioc_sources for i in s["indicators"] if i["confidence_label"] in ("HIGH", "CRITICAL"))
+    console.print(f"\n[bold]Loaded {len(ioc_sources)} malware families, {total_iocs} IOCs ({total_high} high confidence)[/]")
 
-    all_findings = []
-    checks = [
-        ("Processes", _check_processes),
-        ("Packages", _check_packages),
-        ("File paths", _check_file_paths),
-        ("File names", _check_files),
-        ("Hash matching", _check_hashes),
-    ]
+    raw_processes = shell_command("ps -A 2>/dev/null || ps 2>/dev/null") or ""
+    raw_packages = shell_command("pm list packages 2>/dev/null") or ""
+    process_list = raw_processes.lower().split("\n")
+    package_list = raw_packages.lower().split("\n")
 
-    for name, func in checks:
-        with console.status(f"[cyan]Checking {name}...[/]"):
-            findings = func(ioc_sources)
-            all_findings.extend(findings)
+    matched = []
 
-    malware_hits = {}
-    for f in all_findings:
-        category = f[3]
-        malware_hits.setdefault(category, 0)
-        malware_hits[category] += 1
+    for source in ioc_sources:
+        for ind in source["indicators"]:
+            value = ind["value"]
+            ioc_type = ind["type"]
 
-    if not all_findings:
+            if ioc_type == "process_name" and not should_skip(ioc_type, value):
+                for line in process_list:
+                    if value in line:
+                        matched.append({
+                            "malware": source["malware_name"],
+                            "type": ioc_type,
+                            "value": value,
+                            "confidence_score": ind["confidence_score"],
+                            "confidence_label": ind["confidence_label"],
+                            "detail": f"Process '{value}' running on device",
+                        })
+                        break
+
+            elif ioc_type == "app_id_exact":
+                exact = f"package:{value.lower()}"
+                if any(exact == p.strip() for p in package_list):
+                    matched.append({
+                        "malware": source["malware_name"],
+                        "type": ioc_type,
+                        "value": value,
+                        "confidence_score": ind["confidence_score"],
+                        "confidence_label": ind["confidence_label"],
+                        "detail": f"Package '{value}' installed on device",
+                    })
+
+            elif ioc_type in ("sha256", "sha1", "md5"):
+                paths_to_check = [
+                    "/system/bin/app_process",
+                    "/system/bin/app_process32",
+                    "/system/bin/app_process64",
+                ]
+                for path in paths_to_check:
+                    try:
+                        raw = shell_command(f"sha256sum {path} 2>/dev/null")
+                        if raw and raw.strip().split()[0].lower() == value:
+                            matched.append({
+                                "malware": source["malware_name"],
+                                "type": ioc_type,
+                                "value": value[:16] + "...",
+                                "confidence_score": ind["confidence_score"],
+                                "confidence_label": ind["confidence_label"],
+                                "detail": f"SHA256 of '{path}' matches indicator",
+                            })
+                    except Exception:
+                        continue
+
+            elif ioc_type == "domain_exact":
+                try:
+                    raw = shell_command(f"nslookup {value} 2>/dev/null || ping -c 1 -W 1 {value} 2>/dev/null")
+                    if raw and ("Address" in raw or "bytes from" in raw):
+                        matched.append({
+                            "malware": source["malware_name"],
+                            "type": ioc_type,
+                            "value": value,
+                            "confidence_score": ind["confidence_score"],
+                            "confidence_label": ind["confidence_label"],
+                            "detail": f"C2 domain '{value}' resolves from device",
+                        })
+                except Exception:
+                    continue
+
+    if not matched:
         console.print("\n[bold green]\u2705 No MVT indicators matched this device.[/]")
-        console.print("[dim]This does not guarantee the device is clean. Spyware uses advanced hiding techniques.[/]")
+        console.print("[dim]Note: an absence of indicators does not guarantee the device is clean.[/]")
         return
 
-    console.print(f"\n[bold red]\U0001f6a8 {len(all_findings)} MVT indicator match(es) found![/]\n")
+    overall_label, overall_score = _classify_findings(matched)
 
-    for malware, count in sorted(malware_hits.items(), key=lambda x: -x[1]):
-        console.print(f"  [red]\u26a0[/] [bold]{malware}[/]: {count} match(es)")
+    console.print(f"\n{'='*60}")
+    console.print(f"  [bold]Overall Confidence:[/] {format_confidence_badge(overall_score, overall_label)}")
+    console.print(f"{'='*60}\n")
 
-    console.print("\n[bold]Detailed findings:[/]")
-    for finding in all_findings:
-        sev, title, desc, category = finding
-        console.print(f"  \u2022 [bold]{title}[/]")
-        console.print(f"    {desc}")
+    for src_name in sorted(set(m["malware"] for m in matched)):
+        src_matches = [m for m in matched if m["malware"] == src_name]
+        high_m = sum(1 for m in src_matches if m["confidence_label"] in ("HIGH", "CRITICAL"))
+        low_m = sum(1 for m in src_matches if m["confidence_label"] == "LOW")
 
-    console.print("\n[bold yellow]\U0001f4a1 Recommended actions:[/]")
-    console.print("  \u2022 Immediately disconnect the device from any network")
-    console.print("  \u2022 Factory reset the device from recovery mode (not from settings)")
-    console.print("  \u2022 After reset, change all passwords from a trusted device")
-    console.print("  \u2022 Enable two-factor authentication on all accounts")
-    console.print("\n[dim]\u26a0\ufe0f Indicators from MVT project (Amnesty International) - MIT licensed[/]")
-    console.print("[dim]MVT: https://github.com/mvt-project/mvt[/]")
+        label = f"[red]{src_name}[/]" if high_m > 0 else f"[yellow]{src_name}[/]"
+        console.print(f"  {label}: {len(src_matches)} match(es) ({high_m} high conf, {low_m} low conf)")
+
+    console.print(f"\n[bold]Findings ({len(matched)} total):[/]")
+    for m in sorted(matched, key=lambda x: -x["confidence_score"]):
+        badge = format_confidence_badge(m["confidence_score"], m["confidence_label"])
+        console.print(f"  {badge} [bold]{m['value']}[/]")
+        console.print(f"         {m['detail']}")
+        console.print(f"         Family: {m['malware']}")
+
+    console.print(f"\n[bold]Recommendation:[/] {get_recommendation(overall_label)}")
+
+    if overall_label in ("CRITICAL", "HIGH"):
+        console.print("\n[bold red]\U0001f6a8 High confidence indicators detected. Immediate action recommended.[/]")
+    elif overall_label == "MEDIUM":
+        console.print("\n[bold orange1]\u26a0\ufe0f Medium confidence. Investigate further before concluding infection.[/]")
+    elif overall_label == "LOW":
+        console.print("\n[bold yellow]\u26a0\ufe0f Low confidence only. These may be false positives or legitimate system components.[/]")
+        console.print("[yellow]Look for corroborating evidence (unusual data usage, battery drain, unexpected behavior).[/]")
+
+    console.print("\n[dim]\u2699\ufe0f Indicators from MVT project (Amnesty International) - MIT licensed[/]")
