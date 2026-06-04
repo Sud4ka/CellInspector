@@ -183,6 +183,14 @@ Además de la búsqueda en GitHub, ejecuta:
 
 **Nota:** El deep scan depende de DuckDuckGo. Si no está accesible desde tu red, el deep scan se omitirá automáticamente sin bloquear el análisis.
 
+**GitHub Token (opcional):** Para evitar límites de tasa (60 req/h sin autenticar vs. 5000 autenticado), exporta tu token antes de ejecutar:
+
+```bash
+export GITHUB_TOKEN="ghp_tu_token_aqui"
+```
+
+Puedes generar un token en https://github.com/settings/tokens (no requiere permisos especiales para búsqueda pública).
+
 Cada fuente se muestra en paneles con su propio color (naranja para Reddit, amarillo para Pastebin, rojo para foros, azul para web).
 
 ### 📄 Modo Reporte (`-r` / `--report`)
