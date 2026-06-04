@@ -19,7 +19,7 @@ DEEP_CACHE_TIME = 0
 
 
 def _github_search(query: str, max_results: int = 8) -> Optional[dict]:
-    url = f"{GITHUB_API}?q={query}+poc+exploit&sort=updated&order=desc&per_page={max_results}"
+    url = f"{GITHUB_API}?q={query}&sort=updated&order=desc&per_page={max_results}"
     req = Request(url, headers={"User-Agent": "CellInspector/1.0", "Accept": "application/vnd.github.v3+json"})
     try:
         with urlopen(req, timeout=15) as resp:
@@ -58,34 +58,24 @@ def _parse_repos(data: dict) -> List[dict]:
     return repos
 
 
-def _build_queries(device_info: dict) -> set:
+def _build_queries(device_info: dict) -> list:
     model = device_info.get("Model", "")
     android_ver = device_info.get("Android Version", "")
-    api_level = device_info.get("API Level", "")
-    security_patch = device_info.get("Security Patch", "")
     product_name = device_info.get("Product Name", "")
-    manufacturer = device_info.get("Manufacturer", "")
 
-    queries = set()
+    clean_model = re.sub(r"[^a-zA-Z0-9]", "", model) if model else ""
+    clean_product = re.sub(r"[^a-zA-Z0-9]", "", product_name) if product_name else ""
 
-    if model:
-        clean_model = re.sub(r"[^a-zA-Z0-9]", "", model)
-        queries.add(f"{manufacturer}+{clean_model}+android+{android_ver}")
-        queries.add(f"{clean_model}+cve")
+    queries = []
 
-    if product_name:
-        clean_product = re.sub(r"[^a-zA-Z0-9]", "", product_name)
-        queries.add(f"{clean_product}+exploit")
-
-    if api_level:
-        queries.add(f"android+{api_level}+cve+poc")
-
-    if security_patch and security_patch != "Unknown":
-        year = security_patch[:4]
-        month = security_patch[5:7]
-        queries.add(f"android+security+bulletin+{year}+{month}+cve")
-
-    queries.add(f"android+{android_ver}+exploit+poc")
+    if android_ver:
+        queries.append(f"android+{android_ver}+exploit")
+    if clean_model:
+        queries.append(f"{clean_model}+exploit")
+    if clean_model:
+        queries.append(f"{clean_model}+cve")
+    if clean_product and clean_product != clean_model:
+        queries.append(f"{clean_product}+exploit")
 
     return queries
 
@@ -101,7 +91,7 @@ def _fetch_github_results(device_info: dict) -> List[dict]:
     all_repos = []
     seen_urls = set()
 
-    for query in list(queries)[:4]:
+    for query in queries:
         console.print(f"  [dim]Searching GitHub: {query}...[/]")
         data = _github_search(query)
         if data is None:
