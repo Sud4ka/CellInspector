@@ -2,9 +2,11 @@ import json
 import time
 import re
 import urllib.parse
-from typing import List, Optional
+import concurrent.futures
+from typing import List, Optional, Tuple
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+
 
 from core.display import console
 from core.adb_client import get_device_info, shell_command
@@ -17,9 +19,33 @@ CACHE_TIME = 0
 DEEP_CACHE: List[dict] = []
 DEEP_CACHE_TIME = 0
 
+DORK_TEMPLATES = [
+    "{term}+exploit",
+    "{term}+poc",
+    "{term}+cve",
+    "{term}+rce",
+    "{term}+vulnerability+poc",
+    "{term}+kernel+exploit",
+    "{term}+0day+poc",
+    "{term}+root+exploit",
+    "{term}+exploit+vulnerabilidade",
+    "{term}+poc+vulnerabilidad",
+    "{term}+exploit+vulnérabilité",
+    "{term}+exploit+vulnerabilità",
+    "{term}+эксплойт+уязвимость",
+    "{term}+poc+взлом",
+    "{term}+漏洞+exploit",
+    "{term}+利用+poc",
+    "{term}+脆弱性+exploit",
+    "{term}+エクスプロイト+poc",
+    "{term}+취약점+exploit",
+    "{term}+익스플로잇+poc",
+]
+
 
 def _github_search(query: str, max_results: int = 8) -> Optional[dict]:
-    url = f"{GITHUB_API}?q={query}&sort=updated&order=desc&per_page={max_results}"
+    encoded_q = urllib.parse.quote(query, safe="+")
+    url = f"{GITHUB_API}?q={encoded_q}&sort=updated&order=desc&per_page={max_results}"
     req = Request(url, headers={"User-Agent": "CellInspector/1.0", "Accept": "application/vnd.github.v3+json"})
     try:
         with urlopen(req, timeout=15) as resp:
@@ -62,22 +88,52 @@ def _build_queries(device_info: dict) -> list:
     model = device_info.get("Model", "")
     android_ver = device_info.get("Android Version", "")
     product_name = device_info.get("Product Name", "")
+    manufacturer = device_info.get("Manufacturer", "")
 
     clean_model = re.sub(r"[^a-zA-Z0-9]", "", model) if model else ""
     clean_product = re.sub(r"[^a-zA-Z0-9]", "", product_name) if product_name else ""
+    clean_manufacturer = re.sub(r"[^a-zA-Z0-9]", "", manufacturer) if manufacturer else ""
+
+    terms = []
+    if android_ver:
+        terms.append(f"android+{android_ver}")
+    if clean_model:
+        terms.append(clean_model)
+    if clean_product and clean_product != clean_model:
+        terms.append(clean_product)
+    if clean_manufacturer and clean_manufacturer.lower() not in (clean_model.lower(), clean_product.lower()):
+        terms.append(clean_manufacturer)
 
     queries = []
-
-    if android_ver:
-        queries.append(f"android+{android_ver}+exploit")
-    if clean_model:
-        queries.append(f"{clean_model}+exploit")
-    if clean_model:
-        queries.append(f"{clean_model}+cve")
-    if clean_product and clean_product != clean_model:
-        queries.append(f"{clean_product}+exploit")
+    for term in terms:
+        for template in DORK_TEMPLATES:
+            queries.append(template.format(term=term))
 
     return queries
+
+
+def _verify_url(url: str, timeout: int = 5) -> bool:
+    req = Request(url, method="HEAD",
+                  headers={"User-Agent": "CellInspector/1.0"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except (URLError, HTTPError, OSError):
+        return False
+
+
+def _verify_repos(repos: List[dict]) -> List[dict]:
+    if not repos:
+        return repos
+    console.print(f"  [dim]Verifying {len(repos)} repository URLs...[/]")
+    urls = [r["url"] for r in repos]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        results = list(pool.map(_verify_url, urls))
+    verified = [r for r, ok in zip(repos, results) if ok]
+    failed = len(repos) - len(verified)
+    if failed:
+        console.print(f"  [dim]Descartados {failed} repo(s) inaccesibles (404/error).[/]")
+    return verified
 
 
 def _fetch_github_results(device_info: dict) -> List[dict]:
@@ -86,12 +142,18 @@ def _fetch_github_results(device_info: dict) -> List[dict]:
     if CACHE and (now - CACHE_TIME) < 300:
         return CACHE
 
-    queries = _build_queries(device_info)
+    all_queries = _build_queries(device_info)
+
+    if not all_queries:
+        return []
+
+    step = max(1, len(all_queries) // 12)
+    sampled = [all_queries[i] for i in range(0, len(all_queries), step)][:15]
 
     all_repos = []
     seen_urls = set()
 
-    for query in queries:
+    for query in sampled:
         console.print(f"  [dim]Searching GitHub: {query}...[/]")
         data = _github_search(query)
         if data is None:
@@ -105,6 +167,9 @@ def _fetch_github_results(device_info: dict) -> List[dict]:
         time.sleep(1.5)
 
     all_repos.sort(key=lambda x: -x["stars"])
+
+    all_repos = _verify_repos(all_repos)
+
     CACHE = all_repos
     CACHE_TIME = now
     return all_repos
@@ -126,7 +191,10 @@ def _is_relevant(repo: dict, device_info: dict) -> bool:
                 "arbitrary code", "memory corruption", "denial of service",
                 "elevation of privilege", "information disclosure",
                 "bypass", "sandbox escape", "kernel exploit",
-                "bootloader unlock", "oem unlock", "firmware"]
+                "bootloader unlock", "oem unlock", "firmware",
+                "vulnerabilidade", "vulnérabilité", "vulnerabilidad",
+                "vulnerabilità", "уязвимость", "漏洞", "脆弱性", "취약점",
+                "эксплойт", "エクスプロイト", "익스플로잇", "взлом"]
 
     has_keyword = any(kw in combined for kw in keywords)
 
@@ -134,6 +202,9 @@ def _is_relevant(repo: dict, device_info: dict) -> bool:
     matches_device = any(term and term in combined for term in device_terms) if device_terms else True
 
     if has_keyword and matches_device:
+        return True
+
+    if has_keyword and "android" in combined:
         return True
 
     if not device_terms:
