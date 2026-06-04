@@ -134,24 +134,40 @@ Busca PoCs/exploits activos para tu dispositivo:
 | Paso | Acción |
 |------|--------|
 | 1️⃣ | Detecta modelo, versión de Android, API level, parche de seguridad |
-| 2️⃣ | Consulta GitHub API con 4 queries distintas |
-| 3️⃣ | Filtra por relevancia (CVE, exploit, RCE, root, escalada de privilegios) |
-| 4️⃣ | Muestra resultados con enlace, estrellas, lenguaje y fecha |
+| 2️⃣ | Genera **~80 dorks multilingües** (EN, PT, ES, FR, IT, RU, ZH, JA, KO) y selecciona 12-15 cubriendo todos los idiomas |
+| 3️⃣ | Consulta GitHub API con cada dork |
+| 4️⃣ | **Verifica HTTP 200** — en paralelo (10 threads) descarta repos que devuelvan 404 |
+| 5️⃣ | Filtra por relevancia (CVE, exploit, RCE, root, escalada de privilegios, y keywords en 9 idiomas) |
+| 6️⃣ | Muestra resultados con enlace, estrellas, lenguaje y fecha |
+
+Idiomas de los dorks:
+
+| Idioma | Keywords |
+|--------|----------|
+| 🇬🇧 Inglés | `exploit`, `poc`, `cve`, `rce`, `vulnerability`, `kernel exploit`, `0day` |
+| 🇧🇷 Portugués | `vulnerabilidade` |
+| 🇪🇸 Español | `vulnerabilidad` |
+| 🇫🇷 Francés | `vulnérabilité` |
+| 🇮🇹 Italiano | `vulnerabilità` |
+| 🇷🇺 Ruso | `эксплойт+уязвимость`, `poc+взлом` |
+| 🇨🇳 Chino | `漏洞+exploit`, `利用+poc` |
+| 🇯🇵 Japonés | `脆弱性+exploit`, `エクスプロイト+poc` |
+| 🇰🇷 Coreano | `취약점+exploit`, `익스플로잇+poc` |
 
 Salida:
 ```
 🔍 Scanning GitHub for active exploits...
-  Device: moto g72 | Android: 13
+  Device: Pixel 7 | Android: 14
 
-🚨 3 exploit(s) activo(s) con PoC detectado(s)!
+🚨 5 GitHub PoC(s) encontrados!
 
-╭─ 💥 Exploit #1 ─────────────────────────────╮
-│ user/CVE-2023-xxx-android-poc                │
-│ PoC for CVE-2023-xxx in Android 13...        │
-│                                              │
-│ 🔗 https://github.com/user/repo              │
-│ ⭐ 42  📁 Python  📅 2025-10-01              │
-╰──────────────────────────────────────────────╯
+╭─ 💥 GitHub Exploit #1 ──────────────────────────╮
+│ 0x36/Pixel_GPU_Exploit                           │
+│ Android 14 kernel exploit for Pixel7/8 Pro       │
+│                                                   │
+│ 🔗 https://github.com/0x36/Pixel_GPU_Exploit      │
+│ ⭐ 551  📁 C  📅 2025-08-15                       │
+╰───────────────────────────────────────────────────╯
 ```
 
 #### Deep Scan (`--0days --deep`)
@@ -318,7 +334,7 @@ CellInspector/
 │   ├── 🔔 notification_analyzer.py  # Notificaciones + remediación interactiva
 │   ├── 🛡️ device_analyzer.py        # Seguridad del dispositivo
 │   ├── 🩹 remediation.py            # Matar procesos, watchers
-│   └── 🚨 zero_day_checker.py       # Búsqueda de PoCs: GitHub + Reddit + Pastebin + foros
+│   └── 🚨 zero_day_checker.py       # PoCs multilingüe: GitHub + deep web (Reddit, Pastebin, foros)
 ├── reports/                         # 📄 Reportes Markdown
 └── data/                            # Datos externos
 ```
