@@ -582,6 +582,7 @@ def main():
 Examples:
   %(prog)s                          Run full device security scan
   %(prog)s --0days                  Scan GitHub for active PoC exploits
+  %(prog)s --0days --deep           Deep scan: Reddit, Pastebin, forums + GitHub
   %(prog)s --wireless               Enable wireless ADB before scanning
   %(prog)s --verbose                Run scan with verbose output
   %(prog)s --monitor                Monitor device in real-time
@@ -597,6 +598,12 @@ Examples:
         action="store_true",
         dest="zero_days",
         help="Search GitHub for active PoC exploits targeting this device",
+    )
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        dest="deep_scan",
+        help="Deep scan: search Reddit, Pastebin, and web forums for PoC exploits (use with --0days)",
     )
     parser.add_argument(
         "-f", "--fixall",
@@ -655,7 +662,7 @@ Examples:
         if not args.no_banner:
             print_banner()
         wait_for_device_or_exit()
-        run_zero_day_check()
+        run_zero_day_check(deep=args.deep_scan)
     elif args.fixall:
         run_fix_all(verbose=args.verbose, wireless=args.wireless)
     elif args.kill:

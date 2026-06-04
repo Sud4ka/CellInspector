@@ -14,6 +14,7 @@
 | 🔔 **Notificaciones** | `-n` / `--notifications` | Gestión interactiva de listeners, canales y purga de notificaciones |
 | 📡 **Monitor** | `-m` / `--monitor` | Escaneo en tiempo real cada N segundos |
 | 🚨 **Zero-Day scan** | `--0days` | Busca PoCs/exploits activos en GitHub para tu dispositivo |
+| 🌐 **Deep scan** | `--0days --deep` | Búsqueda extendida en Reddit, Pastebin y foros especializados |
 | 📄 **Reporte** | `-r` / `--report` | Genera reporte Markdown en `reports/` |
 | 📖 **Guías localizadas** | *(automático)* | Detecta el idioma del dispositivo y muestra guías paso a paso en ese idioma |
 
@@ -117,17 +118,25 @@ python3 cellinspector.py --monitor --interval 30   # cada 30 segundos
 ### 🚨 Zero-Day Exploit Scanner (`--0days`)
 
 ```bash
-python3 cellinspector.py --0days
+python3 cellinspector.py --0days           # Solo GitHub
+python3 cellinspector.py --0days --deep    # GitHub + Reddit + Pastebin + foros
 ```
 
-Busca en GitHub PoCs/exploits activos para tu dispositivo:
+Busca PoCs/exploits activos para tu dispositivo:
+
+| Modo | Fuentes |
+|------|---------|
+| 🐙 **Normal** (`--0days`) | GitHub (API de repositorios) |
+| 🌐 **Deep** (`--0days --deep`) | GitHub + Reddit + Pastebin + DuckDuckGo (breach forums, exploit.in, etc.) |
+
+#### Normal (`--0days`)
 
 | Paso | Acción |
 |------|--------|
 | 1️⃣ | Detecta modelo, versión de Android, API level, parche de seguridad |
 | 2️⃣ | Consulta GitHub API con 4 queries distintas |
 | 3️⃣ | Filtra por relevancia (CVE, exploit, RCE, root, escalada de privilegios) |
-| 4️⃣ | Muestra resultados en rojo con enlace, estrellas, lenguaje y fecha |
+| 4️⃣ | Muestra resultados con enlace, estrellas, lenguaje y fecha |
 
 Salida:
 ```
@@ -144,6 +153,18 @@ Salida:
 │ ⭐ 42  📁 Python  📅 2025-10-01              │
 ╰──────────────────────────────────────────────╯
 ```
+
+#### Deep Scan (`--0days --deep`)
+
+Además de la búsqueda en GitHub, ejecuta:
+
+| Fuente | API/Método | Resultados |
+|--------|-----------|------------|
+| 🔴 Reddit | `reddit.com/search.json` | Posts con términos de exploit/CVE para el dispositivo |
+| 📋 Pastebin | `psbdmp.ws/api/search` | Pastes con código de exploit o PoCs |
+| 🌐 Web/Foros | DuckDuckGo HTML | Resultados con énfasis en breach forums, exploit.in, xss.is |
+
+Cada fuente se muestra en paneles con su propio color (naranja para Reddit, amarillo para Pastebin, azul para web).
 
 ### 📄 Modo Reporte (`-r` / `--report`)
 
@@ -297,7 +318,7 @@ CellInspector/
 │   ├── 🔔 notification_analyzer.py  # Notificaciones + remediación interactiva
 │   ├── 🛡️ device_analyzer.py        # Seguridad del dispositivo
 │   ├── 🩹 remediation.py            # Matar procesos, watchers
-│   └── 🚨 zero_day_checker.py       # Búsqueda de PoCs en GitHub
+│   └── 🚨 zero_day_checker.py       # Búsqueda de PoCs: GitHub + Reddit + Pastebin + foros
 ├── reports/                         # 📄 Reportes Markdown
 └── data/                            # Datos externos
 ```
