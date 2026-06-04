@@ -8,7 +8,7 @@
 
 | Modo | Flag | Descripción |
 |------|------|-------------|
-| 🔍 **Escaneo completo** | *(ninguno)* | 6 módulos de seguridad: red, procesos, paquetes, logcat, notificaciones, dispositivo |
+| 🔍 **Escaneo completo** | *(ninguno)* | 7 módulos de seguridad: red, procesos, paquetes, logcat, notificaciones, dispositivo, VPN/Proxy |
 | 🛠️ **Auto-fix** | `-f` / `--fixall` | Corrige automáticamente lo detectable y re-verifica con delta report |
 | 🎯 **Modo Kill** | `-k` / `--kill` | Lista y mata procesos sospechosos interactivamente |
 | 🔔 **Notificaciones** | `-n` / `--notifications` | Gestión interactiva de listeners, canales y purga de notificaciones |
@@ -16,7 +16,11 @@
 | 🕵️ **Pegasus detect** | `--pegasus-detect` | Detecta indicadores del spyware Pegasus en el dispositivo |
 | 🚨 **Zero-Day scan** | `--0days` | Busca PoCs/exploits activos en GitHub para tu dispositivo |
 | 🌐 **Deep scan** | `--0days --deep` | Búsqueda extendida en Reddit, Pastebin y foros especializados |
-| 📄 **Reporte** | `-r` / `--report` | Genera reporte Markdown en `reports/` |
+| 🚀 **Full analysis** | `--all` | Escaneo completo + Zero-Day + Pegasus + VPN/Proxy (con o sin internet) |
+| 📡 **Live logcat** | `--live` | Streaming de logcat en tiempo real con alertas coloreadas |
+| 📄 **Reporte Markdown** | `-r` / `--report` | Genera reporte Markdown en `reports/` |
+| 📄 **Reporte JSON** | `--json` | Exporta resultados como JSON estructurado |
+| 🔌 **Modo offline** | `--offline` | Salta checks que requieren internet (C2, GitHub, DuckDuckGo) |
 | 📖 **Guías localizadas** | *(automático)* | Detecta el idioma del dispositivo y muestra guías paso a paso en ese idioma |
 
 ---
@@ -37,6 +41,10 @@ pip install rich
 ## 🚀 Instalación
 
 ```bash
+# Opción 1: pip install (recomendado)
+pip install git+https://github.com/Sud4ka/CellInspector.git
+
+# Opción 2: clonar y ejecutar
 git clone <repo> cellinspector
 cd cellinspector
 chmod +x cellinspector.py
@@ -61,7 +69,46 @@ Ejecuta los 6 módulos de análisis y muestra:
 ```
 python3 cellinspector.py --wireless     # Escaneo vía WiFi
 python3 cellinspector.py --verbose      # Modo detallado
+python3 cellinspector.py --version      # Ver versión
 ```
+
+### 🚀 Full Analysis (`--all`)
+
+```bash
+python3 cellinspector.py --all           # Escaneo completo + Zero-Day + Pegasus + VPN/Proxy
+python3 cellinspector.py --all --json    # Lo mismo + export JSON
+python3 cellinspector.py --all --offline # Sin checks de internet
+```
+
+Ejecuta **todo** secuencialmente: escaneo de 7 módulos → Zero-Day exploit search → Pegasus detection → VPN/Proxy analysis. Ideal para auditorías completas en un solo comando.
+
+### 📡 Live Logcat Monitor (`--live`)
+
+```bash
+python3 cellinspector.py --live
+```
+
+Streaming en tiempo real de `adb logcat` con resaltado por colores:
+- 🔴 **Rojo negrita** — `FATAL EXCEPTION`, `CRASH`
+- 🟠 **Naranja** — `ANR`
+- 🟡 **Amarillo** — errores generales
+- 🚨 **Rojo con alerta** — patrones de `frida`, `ptrace` (indicadores de debugging/exploits)
+
+### 📄 JSON Export (`--json`)
+
+```bash
+python3 cellinspector.py --all --json
+```
+
+Genera `reports/cellinspector_report_<timestamp>.json` con estructura parseable para integración con SIEM o pipelines CI/CD.
+
+### 🔌 Modo Offline (`--offline`)
+
+```bash
+python3 cellinspector.py --all --offline
+```
+
+Salta todos los checks que requieren conexión a internet: C2 connectivity, GitHub API, DuckDuckGo. Útil para auditorías en dispositivos sin conectividad o en entornos aislados.
 
 ### 🛠️ Auto-fix (`-f` / `--fixall`)
 
@@ -271,6 +318,9 @@ Genera `reports/cellinspector_report_<timestamp>.md`
 - 🚩 Cruza contra IOC database de malware y patrones sospechosos
 - 🔑 Detecta permisos de alto riesgo
 - 📊 Identifica paquetes con nombres sospechosos
+- 🦠 **Stalkerware detection** — 38 paquetes de spyware comercial (mSpy, FlexiSPY, TheTruthSpy, Cocospy, Hoverwatch, etc.)
+- ⚠️ **Permission risk combos** — detecta 8 combinaciones peligrosas (Full Surveillance, Keylogger, Call Recording, Accessibility Abuse, Overlay Attack, etc.)
+- 🔐 **APK integrity** — calcula SHA256 de APKs instalados y compara contra hashes de malware conocido y Pegasus
 
 ### 4️⃣ 📝 Logcat Monitor
 
@@ -291,6 +341,7 @@ Genera `reports/cellinspector_report_<timestamp>.md`
 |-------|-------------|
 | Build type | user / userdebug / eng |
 | Security patch | Nivel del parche |
+| 🔍 **CVE Scanner** | 37 CVEs desde 2021 — compara parche vs base de datos local |
 | Root | Busca binario `su` |
 | Verified boot | Estado de verificación |
 | 🔒 SELinux | Enforcing / permissive |
@@ -298,6 +349,14 @@ Genera `reports/cellinspector_report_<timestamp>.md`
 | 🔐 Encryption | Cifrado de almacenamiento |
 | 📲 Unknown sources | Instalación fuera de Play Store |
 | ⚙️ Developer options | Estado |
+
+### 7️⃣ 🔒 VPN/Proxy Detection
+
+- 🌐 Detecta interfaces VPN activas (tun, tap, ppp)
+- 📱 Lista apps de VPN/WireGuard/OpenVPN/Psiphon instaladas
+- 🧅 Detecta Tor/Orbot/Orfox
+- ⚙️ Verifica proxy HTTP global configurado
+- 🚇 Detecta túneles IP
 
 ---
 
@@ -381,20 +440,22 @@ CellInspector/
 │   ├── 🎨 display.py                # UI rich (paneles, termómetro, reportes)
 │   ├── 📏 severity.py               # Enum Severity
 │   ├── 📖 guides.py                 # Guías localizadas paso a paso
-│   ├── 🗃️ ioc_db.py                 # IOC database general
+│   ├── 🗃️ ioc_db.py                 # IOC database general + stalkerware
 │   └── 🦠 pegasus_ioc.py            # IOC database de Pegasus (hashes, C2, packages, procesos)
 ├── modules/
 │   ├── 🌐 network_analyzer.py       # Conexiones de red
 │   ├── ⚙️ process_scanner.py        # Procesos
-│   ├── 📦 package_analyzer.py       # Paquetes instalados
+│   ├── 📦 package_analyzer.py       # Paquetes + stalkerware + permission combos + APK integrity
 │   ├── 📝 logcat_monitor.py         # Logs del sistema
 │   ├── 🔔 notification_analyzer.py  # Notificaciones + remediación interactiva
-│   ├── 🛡️ device_analyzer.py        # Seguridad del dispositivo
+│   ├── 🛡️ device_analyzer.py        # Seguridad + CVE scanner local (37 CVEs)
 │   ├── 🩹 remediation.py            # Matar procesos, watchers
 │   ├── 🚨 zero_day_checker.py       # PoCs multilingüe: GitHub + deep web (Reddit, Pastebin, foros)
-│   └── 🦠 pegasus_detector.py       # Detector de spyware Pegasus (6 capas de detección)
-├── reports/                         # 📄 Reportes Markdown
-└── data/                            # Datos externos
+│   ├── 🦠 pegasus_detector.py       # Detector de spyware Pegasus (6 capas de detección)
+│   └── 🔒 vpn_detector.py           # VPN/Proxy/Tor detection
+├── reports/                         # 📄 Reportes Markdown y JSON
+├── data/                            # Datos externos
+└── 📦 pyproject.toml                # Configuración pip
 ```
 
 ---
@@ -413,6 +474,9 @@ CellInspector/
 | 🔑 `SUSPICIOUS_PERMISSIONS` | Permisos de alto riesgo |
 | 📝 `SUSPICIOUS_LOGCAT_PATTERNS` | Patrones de log maliciosos |
 | ☠️ `KNOWN_MALWARE_PACKAGES` | Hashes de malware conocido |
+| 🦠 `STALKERWARE_PACKAGES` | 38 paquetes de spyware comercial (mSpy, FlexiSPY, Cocospy, etc.) |
+| 🦠 `STALKERWARE_PROCESSES` | 19 procesos de stalkerware |
+| 🌍 `STALKERWARE_C2_DOMAINS` | 12 dominios C2 de stalkerware |
 
 ### `core/pegasus_ioc.py` — Pegasus Spyware
 
