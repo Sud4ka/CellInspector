@@ -22,6 +22,7 @@
 | 📄 **Reporte JSON+MITRE** | `--json` | Exporta resultados JSON con mapeo MITRE ATT&CK for Mobile |
 | 🔌 **Modo offline** | `--offline` | Salta checks que requieren internet (C2, GitHub, DuckDuckGo) |
 | 🔄 **IOC Auto-update** | `--update-ioc` | Descarga feeds de MalwareBazaar + CISA + AlienVault OTX |
+| 🕵️ **MVT Check** | `--mvt-check` | Detecta Pegasus, Predator y +15 familias con IOCs de MVT (Amnesty) |
 | 🛡️ **VirusTotal** | `VT_API_KEY` | Consulta detección VT para hashes de APKs (env var) |
 | 📖 **Guías localizadas** | *(automático)* | Detecta el idioma del dispositivo y muestra guías paso a paso en ese idioma |
 
@@ -120,6 +121,39 @@ Ejemplo de hallazgo en JSON:
   ]
 }
 ```
+
+### 🕵️ MVT-Powered Detection (`--mvt-check`)
+
+```bash
+cellinspector.py --mvt-check
+```
+
+Utiliza los indicadores STIX2 del proyecto **MVT (Mobile Verification Toolkit)** de Amnesty International para detectar **+15 familias de spyware**:
+
+| Malware | Fuente |
+|---------|--------|
+| 🦠 **Pegasus** (NSO Group) | AmnestyTech investigations |
+| 👁️ **Predator** (Intellexa) | Citizen Lab, Meta, Amnesty |
+| 🔬 **RCS Lab** | Google, Lookout |
+| 👑 **KingSpawn** (Quadream) | Citizen Lab, Microsoft |
+| 🔺 **Operation Triangulation** | Kaspersky |
+| 🐉 **WyrmSpy / DragonEgg** | Lookout |
+| 👻 **Candiru (DevilsTongue)** | Microsoft, Recorded Future |
+| 🦇 **ResidentBat** | RSF, RESIDENT.NGO |
+| 📱 **Cellebrite** | Citizen Lab |
+| ⚔️ **DarkSword** | Google TAG, iVerify, Lookout |
+| 🌊 **Coruna (CryptoWaters)** | Google TAG, iVerify |
+| 👁️ **Stalkerware** (ECHAP) | AssoEchap |
+| 📡 **Wintego Helios** | Amnesty International |
+| 🇷🇸 **NoviSpy (Serbia)** | Amnesty International |
+
+**Cómo funciona:**
+1. Descarga archivos `.stix2` desde los repositorios oficiales de MVT y AmnestyTech
+2. Parsea los patrones STIX2 (dominios, IPs, hashes SHA256, package names, rutas de archivo)
+3. Cruza contra el dispositivo vía ADB (procesos, paquetes, archivos, hashes de system binaries)
+4. Muestra qué familia de malware coincide y cuántos indicadores se detectaron
+
+**Crédito:** Los indicadores STIX2 son mantenidos por el proyecto [MVT](https://github.com/mvt-project/mvt) de [Amnesty International](https://www.amnesty.org). Distribuidos bajo licencia MIT.
 
 ### 🔄 IOC Auto-Update (`--update-ioc`)
 
@@ -510,6 +544,7 @@ CellInspector/
 │   ├── 🩹 remediation.py            # Matar procesos, watchers
 │   ├── 🚨 zero_day_checker.py       # PoCs multilingüe: GitHub + deep web (Reddit, Pastebin, foros)
 │   ├── 🦠 pegasus_detector.py       # Detector de spyware Pegasus (6 capas de detección)
+│   ├── 🕵️ mvt_check.py              # MVT-powered detection (STIX2 IOCs de Amnesty International)
 │   └── 🔒 vpn_detector.py           # VPN/Proxy/Tor detection
 ├── reports/                         # 📄 Reportes Markdown y JSON
 ├── data/                            # Datos externos
@@ -565,3 +600,14 @@ CellInspector/
 <div align="center">
   <sub>CellInspector — Auditor de seguridad Android vía ADB</sub>
 </div>
+
+---
+
+## 🙌 Agradecimientos
+
+- **[MVT (Mobile Verification Toolkit)](https://github.com/mvt-project/mvt)** de **Amnesty International** — por su increíble trabajo en la recopilación y estandarización de indicadores STIX2 de spyware. Sus IOCs (licencia MIT) potencian el módulo `--mvt-check` de CellInspector. El trabajo de Amnesty International en la investigación de spyware de estado-nación es fundamental para la seguridad digital global.
+- **[AbuseCH](https://abuse.ch)** — por MalwareBazaar y sus feeds de malware.
+- **[AlienVault OTX](https://otx.alienvault.com)** — por su plataforma abierta de inteligencia de amenazas.
+- **[CISA](https://www.cisa.gov)** — por el feed de Known Exploited Vulnerabilities.
+- **[VirusTotal](https://www.virustotal.com)** — por su API de análisis de malware.
+- **Comunidad open source** — a todos los investigadores que contribuyen a la seguridad móvil.

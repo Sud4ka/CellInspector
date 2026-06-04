@@ -63,6 +63,7 @@ from modules.remediation import (
     create_watcher_script,
 )
 from core.ioc_updater import run_update_iocs
+from modules.mvt_check import run_mvt_check
 
 _wireless_ip: Optional[str] = None
 _wireless_port: Optional[int] = None
@@ -704,8 +705,10 @@ Examples:
   %(prog)s --monitor                Monitor device in real-time
   %(prog)s --kill                   List and kill suspicious processes
   %(prog)s --notifications          Interactive notification management
+   %(prog)s --mvt-check               Check device with MVT STIX2 indicators
   %(prog)s --fixall                 Auto-fix all issues and re-verify
   %(prog)s --report                 Run scan and generate Markdown report
+  %(prog)s --update-ioc             Download threat intelligence feeds to data/
   %(prog)s --monitor --interval 30  Monitor every 30 seconds
     """,
     )
@@ -800,6 +803,11 @@ Examples:
         help="Download threat intelligence feeds (MalwareBazaar, CISA) to data/",
     )
     parser.add_argument(
+        "--mvt-check",
+        action="store_true",
+        help="Check device with MVT STIX2 indicators (Pegasus, Predator, etc.)",
+    )
+    parser.add_argument(
         "--no-banner",
         action="store_true",
         help="Skip the banner display",
@@ -818,6 +826,13 @@ Examples:
 
     if args.update_ioc:
         run_update_iocs()
+        return
+
+    if args.mvt_check:
+        if not args.no_banner:
+            print_banner()
+        wait_for_device_or_exit()
+        run_mvt_check()
         return
 
     if args.live:
