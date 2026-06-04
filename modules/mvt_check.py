@@ -6,6 +6,14 @@ from typing import Optional
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+from rich.progress import (
+    Progress,
+    BarColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    SpinnerColumn,
+)
+
 from core.display import console
 from core.adb_client import shell_command
 from core.severity import Severity
@@ -239,25 +247,60 @@ def run_mvt_check():
     console.print("\n[bold red]\u2699\ufe0f MVT-Powered Spyware Detection[/]")
     console.print("[dim]Using STIX2 indicators from MVT project (Amnesty International)[/]\n")
 
-    if not os.path.exists(MVT_DIR):
+    _ensure_dir()
+
+    needs_download = any(
+        not os.path.exists(os.path.join(MVT_DIR, s["local"]))
+        for s in STIX2_REPOS
+    )
+    if needs_download:
         console.print("[bold]Downloading STIX2 indicator files...[/]")
-        _ensure_dir()
-        for src in STIX2_REPOS:
-            _download_stix2(src)
+        dl_progress = Progress(
+            SpinnerColumn(spinner_name="dots"),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=None),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            console=console,
+        )
+        with dl_progress:
+            dl_task = dl_progress.add_task(
+                "[cyan]Downloading indicators...",
+                total=len(STIX2_REPOS),
+            )
+            for src in STIX2_REPOS:
+                dl_progress.update(
+                    dl_task,
+                    description=f"[cyan]Downloading {src['name']}...[/]",
+                )
+                _download_stix2(src)
+                dl_progress.update(dl_task, advance=1)
         console.print()
 
     ioc_sources = []
-    for src in STIX2_REPOS:
-        local_path = os.path.join(MVT_DIR, src["local"])
-        if os.path.exists(local_path):
-            parsed = _parse_stix2(local_path)
-            if parsed and parsed["total_parsed"] > 0:
-                ioc_sources.append(parsed)
-                by_type = parsed.get("by_type", {})
-                details = ", ".join(f"{k}: {v}" for k, v in sorted(by_type.items()))
-                console.print(f"  [green]\u2713[/] {parsed['malware_name']}: {parsed['total_parsed']} IOCs ({details})")
-            else:
-                console.print(f"  [yellow]\u2717[/] {src['name']}: no usable indicators")
+    parse_progress = Progress(
+        SpinnerColumn(spinner_name="dots"),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=None),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        console=console,
+    )
+    with parse_progress:
+        parse_task = parse_progress.add_task(
+            "[cyan]Parsing STIX2 indicators...",
+            total=len(STIX2_REPOS),
+        )
+        for src in STIX2_REPOS:
+            local_path = os.path.join(MVT_DIR, src["local"])
+            if os.path.exists(local_path):
+                parsed = _parse_stix2(local_path)
+                if parsed and parsed["total_parsed"] > 0:
+                    ioc_sources.append(parsed)
+                    by_type = parsed.get("by_type", {})
+                    details = ", ".join(f"{k}: {v}" for k, v in sorted(by_type.items()))
+                    console.print(f"  [green]\u2713[/] {parsed['malware_name']}: {parsed['total_parsed']} IOCs ({details})")
+                else:
+                    console.print(f"  [yellow]\u2717[/] {src['name']}: no usable indicators")
+            parse_progress.update(parse_task, advance=1)
 
     if not ioc_sources:
         console.print("[red]\u274c No STIX2 indicators loaded.[/]")
@@ -266,80 +309,112 @@ def run_mvt_check():
 
     total_iocs = sum(s["total_parsed"] for s in ioc_sources)
     total_high = sum(1 for s in ioc_sources for i in s["indicators"] if i["confidence_label"] in ("HIGH", "CRITICAL"))
-    console.print(f"\n[bold]Loaded {len(ioc_sources)} malware families, {total_iocs} IOCs ({total_high} high confidence)[/]")
+    console.print(f"\n[bold]Loaded {len(ioc_sources)} malware families, {total_iocs} IOCs ({total_high} high confidence)[/]\n")
 
-    raw_processes = shell_command("ps -A 2>/dev/null || ps 2>/dev/null") or ""
-    raw_packages = shell_command("pm list packages 2>/dev/null") or ""
-    process_list = raw_processes.lower().split("\n")
-    package_list = raw_packages.lower().split("\n")
+    with console.status("[bold cyan]Fetching device data (processes, packages)...[/]"):
+        raw_processes = shell_command("ps -A 2>/dev/null || ps 2>/dev/null") or ""
+        raw_packages = shell_command("pm list packages 2>/dev/null") or ""
+        process_list = raw_processes.lower().split("\n")
+        package_list = raw_packages.lower().split("\n")
+        paths_to_hash = [
+            "/system/bin/app_process",
+            "/system/bin/app_process32",
+            "/system/bin/app_process64",
+        ]
+        hash_cache = {}
+        for path in paths_to_hash:
+            raw = shell_command(f"sha256sum {path} 2>/dev/null")
+            if raw and raw.strip().split():
+                hash_cache[path] = raw.strip().split()[0].lower()
 
     matched = []
 
-    for source in ioc_sources:
-        for ind in source["indicators"]:
-            value = ind["value"]
-            ioc_type = ind["type"]
+    progress = Progress(
+        SpinnerColumn(spinner_name="dots"),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=None),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+    )
 
-            if ioc_type == "process_name" and not should_skip(ioc_type, value):
-                for line in process_list:
-                    if value in line:
+    with progress:
+        total_ioc_count = sum(len(s["indicators"]) for s in ioc_sources)
+        main_task = progress.add_task(
+            "[cyan]Checking device against MVT indicators...",
+            total=total_ioc_count,
+        )
+
+        for source in ioc_sources:
+            family_name = source["malware_name"]
+            indicators = source["indicators"]
+
+            progress.update(
+                main_task,
+                description=f"[cyan]{family_name}[/]",
+            )
+
+            for idx, ind in enumerate(indicators):
+                value = ind["value"]
+                ioc_type = ind["type"]
+
+                if ioc_type == "process_name" and not should_skip(ioc_type, value):
+                    for line in process_list:
+                        if value in line:
+                            matched.append({
+                                "malware": family_name,
+                                "type": ioc_type,
+                                "value": value,
+                                "confidence_score": ind["confidence_score"],
+                                "confidence_label": ind["confidence_label"],
+                                "detail": f"Process '{value}' running on device",
+                            })
+                            break
+
+                elif ioc_type == "app_id_exact":
+                    exact = f"package:{value.lower()}"
+                    if any(exact == p.strip() for p in package_list):
                         matched.append({
-                            "malware": source["malware_name"],
+                            "malware": family_name,
                             "type": ioc_type,
                             "value": value,
                             "confidence_score": ind["confidence_score"],
                             "confidence_label": ind["confidence_label"],
-                            "detail": f"Process '{value}' running on device",
+                            "detail": f"Package '{value}' installed on device",
                         })
-                        break
 
-            elif ioc_type == "app_id_exact":
-                exact = f"package:{value.lower()}"
-                if any(exact == p.strip() for p in package_list):
-                    matched.append({
-                        "malware": source["malware_name"],
-                        "type": ioc_type,
-                        "value": value,
-                        "confidence_score": ind["confidence_score"],
-                        "confidence_label": ind["confidence_label"],
-                        "detail": f"Package '{value}' installed on device",
-                    })
-
-            elif ioc_type in ("sha256", "sha1", "md5"):
-                paths_to_check = [
-                    "/system/bin/app_process",
-                    "/system/bin/app_process32",
-                    "/system/bin/app_process64",
-                ]
-                for path in paths_to_check:
-                    try:
-                        raw = shell_command(f"sha256sum {path} 2>/dev/null")
-                        if raw and raw.strip().split()[0].lower() == value:
+                elif ioc_type in ("sha256", "sha1", "md5"):
+                    for path, cached_hash in hash_cache.items():
+                        if cached_hash == value:
                             matched.append({
-                                "malware": source["malware_name"],
+                                "malware": family_name,
                                 "type": ioc_type,
                                 "value": value[:16] + "...",
                                 "confidence_score": ind["confidence_score"],
                                 "confidence_label": ind["confidence_label"],
                                 "detail": f"SHA256 of '{path}' matches indicator",
                             })
+                            break
+
+                elif ioc_type == "domain_exact":
+                    try:
+                        raw = shell_command(
+                            f"nslookup {value} 2>/dev/null || ping -c 1 -W 1 {value} 2>/dev/null",
+                            timeout=5,
+                        )
+                        if raw and ("Address" in raw or "bytes from" in raw):
+                            matched.append({
+                                "malware": family_name,
+                                "type": ioc_type,
+                                "value": value,
+                                "confidence_score": ind["confidence_score"],
+                                "confidence_label": ind["confidence_label"],
+                                "detail": f"C2 domain '{value}' resolves from device",
+                            })
                     except Exception:
                         continue
 
-            elif ioc_type == "domain_exact":
-                try:
-                    raw = shell_command(f"nslookup {value} 2>/dev/null || ping -c 1 -W 1 {value} 2>/dev/null")
-                    if raw and ("Address" in raw or "bytes from" in raw):
-                        matched.append({
-                            "malware": source["malware_name"],
-                            "type": ioc_type,
-                            "value": value,
-                            "confidence_score": ind["confidence_score"],
-                            "confidence_label": ind["confidence_label"],
-                            "detail": f"C2 domain '{value}' resolves from device",
-                        })
-                except Exception:
-                    continue
+                progress.update(main_task, advance=1)
 
     if not matched:
         console.print("\n[bold green]\u2705 No MVT indicators matched this device.[/]")
