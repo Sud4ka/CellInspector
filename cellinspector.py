@@ -62,6 +62,7 @@ from modules.remediation import (
     monitor_resurrection,
     create_watcher_script,
 )
+from core.ioc_updater import run_update_iocs
 
 _wireless_ip: Optional[str] = None
 _wireless_port: Optional[int] = None
@@ -794,6 +795,11 @@ Examples:
         help="Show version and exit",
     )
     parser.add_argument(
+        "--update-ioc",
+        action="store_true",
+        help="Download threat intelligence feeds (MalwareBazaar, CISA) to data/",
+    )
+    parser.add_argument(
         "--no-banner",
         action="store_true",
         help="Skip the banner display",
@@ -808,6 +814,10 @@ Examples:
     if args.version:
         console.print(f"[bold cyan]CellInspector[/] [white]v{VERSION}[/]")
         console.print("[dim]Mobile Device Security Auditor[/]")
+        return
+
+    if args.update_ioc:
+        run_update_iocs()
         return
 
     if args.live:

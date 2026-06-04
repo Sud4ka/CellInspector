@@ -9,6 +9,8 @@ from core.ioc_db import (
     KNOWN_MALWARE_PACKAGES,
     STALKERWARE_PACKAGES,
 )
+from core.ioc_updater import get_dynamic_packages, get_dynamic_hashes
+from core.vt_integration import lookup_hash, format_vt_result
 
 PERMISSION_RISK_COMBOS = [
     {
@@ -100,7 +102,7 @@ def _check_permission_combos(pkg: str, perms: list) -> List[Tuple]:
     return findings
 
 
-def _check_apk_integrity(pkg: str) -> List[Tuple]:
+def _check_apk_integrity(pkg: str, check_vt: bool = True) -> List[Tuple]:
     findings = []
     path_raw = shell_command(f"pm path {pkg} 2>/dev/null")
     if not path_raw or "package:" not in path_raw:
@@ -126,6 +128,29 @@ def _check_apk_integrity(pkg: str) -> List[Tuple]:
             [f"Package: {pkg}", f"APK path: {apk_path}", f"SHA256: {file_hash}"],
             "Immediately factory reset the device. Pegasus is a state-level spyware.",
         ))
+
+    dynamic_hashes = get_dynamic_hashes()
+    if file_hash in dynamic_hashes:
+        findings.append((
+            Severity.CRITICAL,
+            "APK Hash Matches Dynamic IOC",
+            f"Package '{pkg}' SHA256 matches malware from dynamic IOC feed",
+            "APK Integrity",
+            [f"Package: {pkg}", f"APK path: {apk_path}", f"SHA256: {file_hash}"],
+            "This package matches known malware from threat intelligence feeds.",
+        ))
+
+    if check_vt:
+        vt_result = lookup_hash(file_hash)
+        if vt_result and vt_result["malicious"] > 0:
+            findings.append((
+                Severity.HIGH,
+                f"VirusTotal: {vt_result['malicious']}/{vt_result['total']} detections",
+                f"Package '{pkg}' flagged by {vt_result['malicious']} antivirus engines on VT",
+                "APK Integrity",
+                [f"Package: {pkg}", f"VT Score: {vt_result['malicious']}/{vt_result['total']}", f"SHA256: {file_hash}"],
+                "High VT detection ratio indicates malware. Immediately uninstall.",
+            ))
 
     return findings
 
@@ -154,7 +179,20 @@ def analyze_packages() -> List[Tuple]:
     ))
 
     stalkerware_found = []
+    dynamic_pkgs = get_dynamic_packages()
+
     for pkg in packages:
+        if pkg in dynamic_pkgs:
+            findings.append((
+                Severity.CRITICAL,
+                "Dynamic IOC Package Match",
+                f"Package '{pkg}' matches malware from dynamic IOC feed",
+                "Packages",
+                [f"Package: {pkg}"],
+                "Threat intelligence feed flags this package as malware.",
+            ))
+            continue
+
         if pkg in KNOWN_MALWARE_PACKAGES:
             findings.append((
                 Severity.CRITICAL,

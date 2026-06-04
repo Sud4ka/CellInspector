@@ -10,6 +10,7 @@ import json
 import time
 from typing import List, Optional
 from core.severity import Severity
+from core.mitre_attack import get_techniques
 
 console = Console()
 
@@ -316,6 +317,7 @@ def generate_json_report(
         details = finding[4] if len(finding) > 4 else None
         recommendation = finding[5] if len(finding) > 5 else None
 
+        mitre = get_techniques(category)
         report["findings"].append({
             "severity": severity_map.get(sev, "unknown"),
             "severity_value": sev.value,
@@ -324,6 +326,7 @@ def generate_json_report(
             "category": category,
             "details": details,
             "recommendation": recommendation,
+            "mitre_attack": mitre if mitre else None,
         })
 
     with open(output_path, "w", encoding="utf-8") as f:

@@ -19,8 +19,10 @@
 | 🚀 **Full analysis** | `--all` | Escaneo completo + Zero-Day + Pegasus + VPN/Proxy (con o sin internet) |
 | 📡 **Live logcat** | `--live` | Streaming de logcat en tiempo real con alertas coloreadas |
 | 📄 **Reporte Markdown** | `-r` / `--report` | Genera reporte Markdown en `reports/` |
-| 📄 **Reporte JSON** | `--json` | Exporta resultados como JSON estructurado |
+| 📄 **Reporte JSON+MITRE** | `--json` | Exporta resultados JSON con mapeo MITRE ATT&CK for Mobile |
 | 🔌 **Modo offline** | `--offline` | Salta checks que requieren internet (C2, GitHub, DuckDuckGo) |
+| 🔄 **IOC Auto-update** | `--update-ioc` | Descarga feeds de MalwareBazaar + CISA + AlienVault OTX |
+| 🛡️ **VirusTotal** | `VT_API_KEY` | Consulta detección VT para hashes de APKs (env var) |
 | 📖 **Guías localizadas** | *(automático)* | Detecta el idioma del dispositivo y muestra guías paso a paso en ese idioma |
 
 ---
@@ -94,13 +96,66 @@ Streaming en tiempo real de `adb logcat` con resaltado por colores:
 - 🟡 **Amarillo** — errores generales
 - 🚨 **Rojo con alerta** — patrones de `frida`, `ptrace` (indicadores de debugging/exploits)
 
-### 📄 JSON Export (`--json`)
+### 📄 JSON Export + MITRE ATT&CK (`--json`)
 
 ```bash
 python3 cellinspector.py --all --json
 ```
 
-Genera `reports/cellinspector_report_<timestamp>.json` con estructura parseable para integración con SIEM o pipelines CI/CD.
+Genera `reports/cellinspector_report_<timestamp>.json` con:
+- Hallazgos con severidad, categoría, detalles y recomendaciones
+- **Mapeo MITRE ATT&CK for Mobile** — cada hallazgo incluye técnica(s) MITRE (T1437, T1412, T1503, etc.)
+- Estructura lista para importar a SIEM (Splunk, ELK, etc.)
+
+Ejemplo de hallazgo en JSON:
+```json
+{
+  "severity": "critical",
+  "title": "Stalkerware Detected",
+  "category": "Stalkerware",
+  "mitre_attack": [
+    {"id": "T1413", "name": "Capture Location"},
+    {"id": "T1412", "name": "Capture Data"},
+    {"id": "T1424", "name": "Capture Audio"}
+  ]
+}
+```
+
+### 🔄 IOC Auto-Update (`--update-ioc`)
+
+```bash
+cellinspector.py --update-ioc
+```
+
+Descarga automáticamente inteligencia de amenazas a `data/iocs.json`:
+
+| Fuente | API Key | Contenido |
+|--------|---------|-----------|
+| 🦠 **MalwareBazaar** (AbuseCH) | `MB_API_KEY` | Hashes SHA256 de malware Android, package names |
+| 👾 **AlienVault OTX** | `OTX_API_KEY` | Hashes, dominios, IPs maliciosas de pulses Android |
+| 🏛️ **CISA KEV** | *(ninguna)* | CVEs de Android explotados activamente |
+
+```bash
+# Con todas las fuentes:
+MB_API_KEY=tu_key OTX_API_KEY=tu_key cellinspector.py --update-ioc
+```
+
+Los IOCs descargados se usan automáticamente en el escaneo de paquetes y APKs.
+
+### 🛡️ VirusTotal Integration
+
+CellInspector puede consultar VirusTotal para cada APK instalado:
+
+```bash
+VT_API_KEY=tu_key cellinspector.py --all
+```
+
+- Envía SHA256 de cada APK a la API v3 de VirusTotal
+- Muestra detecciones (ej. `☢ 5/62 VT`) junto al paquete
+- **Rate limiting:** respeta el límite gratuito (~4 req/min)
+- Obtén API key gratis en https://www.virustotal.com/gui/join
+
+**Nota:** Solo se consultan los primeros 30 paquetes para mantener el rate limit dentro de lo razonable.
 
 ### 🔌 Modo Offline (`--offline`)
 
@@ -437,11 +492,14 @@ CellInspector/
 ├── 📜 cellinspector.py              # Entry point + CLI
 ├── core/
 │   ├── 📡 adb_client.py             # Comunicación ADB
-│   ├── 🎨 display.py                # UI rich (paneles, termómetro, reportes)
+│   ├── 🎨 display.py                # UI rich (paneles, termómetro, reportes, JSON+MITRE)
 │   ├── 📏 severity.py               # Enum Severity
 │   ├── 📖 guides.py                 # Guías localizadas paso a paso
 │   ├── 🗃️ ioc_db.py                 # IOC database general + stalkerware
-│   └── 🦠 pegasus_ioc.py            # IOC database de Pegasus (hashes, C2, packages, procesos)
+│   ├── 🦠 pegasus_ioc.py            # IOC database de Pegasus (hashes, C2, packages, procesos)
+│   ├── 🔄 ioc_updater.py            # Auto-update: MalwareBazaar, AlienVault OTX, CISA
+│   ├── 🛡️ vt_integration.py         # VirusTotal API v3 (hash lookup con rate limiting)
+│   └── 🧬 mitre_attack.py           # MITRE ATT&CK for Mobile mapping (T1437, T1412, etc.)
 ├── modules/
 │   ├── 🌐 network_analyzer.py       # Conexiones de red
 │   ├── ⚙️ process_scanner.py        # Procesos
