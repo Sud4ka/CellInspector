@@ -1,6 +1,7 @@
 import json
 import time
 import re
+import os
 import urllib.parse
 import concurrent.futures
 from typing import List, Optional, Tuple
@@ -14,10 +15,12 @@ from core.severity import Severity
 
 
 GITHUB_API = "https://api.github.com/search/repositories"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
 CACHE: List[dict] = []
 CACHE_TIME = 0
-DEEP_CACHE: List[dict] = []
+DEEP_CACHE: dict = {}
 DEEP_CACHE_TIME = 0
+MAX_TOTAL_REPOS = 20
 
 DORK_TEMPLATES = [
     "{term}+exploit",
@@ -46,7 +49,10 @@ DORK_TEMPLATES = [
 def _github_search(query: str, max_results: int = 8) -> Optional[dict]:
     encoded_q = urllib.parse.quote(query, safe="+")
     url = f"{GITHUB_API}?q={encoded_q}&sort=updated&order=desc&per_page={max_results}"
-    req = Request(url, headers={"User-Agent": "CellInspector/1.0", "Accept": "application/vnd.github.v3+json"})
+    headers = {"User-Agent": "CellInspector/1.0", "Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+    req = Request(url, headers=headers)
     try:
         with urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
@@ -148,23 +154,30 @@ def _fetch_github_results(device_info: dict) -> List[dict]:
         return []
 
     step = max(1, len(all_queries) // 12)
-    sampled = [all_queries[i] for i in range(0, len(all_queries), step)][:15]
+    sampled = [all_queries[i] for i in range(0, len(all_queries), step)][:12]
+
+    auth_status = "[green]autenticado[/]" if GITHUB_TOKEN else "[yellow]sin token[/]"
+    console.print(f"  [dim]GitHub API: {auth_status} ({len(sampled)} dorks)[/]")
 
     all_repos = []
     seen_urls = set()
 
     for query in sampled:
-        console.print(f"  [dim]Searching GitHub: {query}...[/]")
+        console.print(f"  [dim]Searching: {query}...[/]")
         data = _github_search(query)
         if data is None:
-            console.print("  [yellow]GitHub API rate limit reached or unavailable.[/]")
+            remaining = getattr(data, "ratelimit_remaining", None)
+            console.print("  [yellow]Límite de API de GitHub alcanzado. Usa GITHUB_TOKEN para más.[/]")
             break
         repos = _parse_repos(data)
         for r in repos:
             if r["url"] not in seen_urls:
                 seen_urls.add(r["url"])
                 all_repos.append(r)
-        time.sleep(1.5)
+        if len(all_repos) >= MAX_TOTAL_REPOS:
+            console.print(f"  [dim]Suficientes repos encontrados ({len(all_repos)}), pasando a verificación...[/]")
+            break
+        time.sleep(1)
 
     all_repos.sort(key=lambda x: -x["stars"])
 
@@ -194,23 +207,25 @@ def _is_relevant(repo: dict, device_info: dict) -> bool:
                 "bootloader unlock", "oem unlock", "firmware",
                 "vulnerabilidade", "vulnérabilité", "vulnerabilidad",
                 "vulnerabilità", "уязвимость", "漏洞", "脆弱性", "취약점",
-                "эксплойт", "エクスプロイト", "익스플로잇", "взлом"]
+                "эксплойт", "エクスプロイト", "익스플로잇", "взлом",
+                "malware", "trojan", "backdoor", "spyware", "rat",
+                "reverse shell", "code execution", "dos", "ddos"]
 
     has_keyword = any(kw in combined for kw in keywords)
 
     device_terms = [t for t in [model, product, manufacturer, android_ver, api_level] if t]
     matches_device = any(term and term in combined for term in device_terms) if device_terms else True
 
-    if has_keyword and matches_device:
-        return True
-
     if has_keyword and "android" in combined:
         return True
 
-    if not device_terms:
-        return has_keyword
+    if has_keyword and matches_device:
+        return True
 
-    if matches_device and repo["stars"] >= 5:
+    if has_keyword:
+        return True
+
+    if matches_device and repo["stars"] >= 3:
         return True
 
     return False
@@ -258,188 +273,120 @@ def _fetch_text(url: str, headers: dict = None, timeout: int = 15) -> Optional[s
         return None
 
 
-def _build_search_terms(device_info: dict) -> List[str]:
-    model = device_info.get("Model", "")
-    manufacturer = device_info.get("Manufacturer", "")
-    android_ver = device_info.get("Android Version", "")
-    product = device_info.get("Product Name", "")
-    terms = set()
-
-    if model:
-        clean_model = re.sub(r"[^a-zA-Z0-9\s]", "", model).strip()
-        terms.add(clean_model)
-    if manufacturer:
-        terms.add(manufacturer)
-    if product:
-        terms.add(re.sub(r"[^a-zA-Z0-9\s]", "", product).strip())
-
-    return [t for t in terms if t]
+DEEP_DORKS = [
+    ("site:reddit.com {term} exploit poc OR rce OR CVE", "Reddit"),
+    ("site:reddit.com {term} vulnerability OR 0day OR kernel", "Reddit"),
+    ("site:pastebin.com {term} exploit OR poc OR CVE", "Pastebin"),
+    ("site:pastebin.com {term} android OR hack OR root", "Pastebin"),
+    ("site:breachforums.is OR site:exploit.in OR site:xss.is {term} exploit", "Forum"),
+    ("site:hackforums.net OR site:antichat.ru {term} android OR exploit", "Forum"),
+    ("{term} exploit poc CVE", "Web"),
+    ("{term} vulnerability 0day android", "Web"),
+]
 
 
-def _reddit_search(device_info: dict, max_results: int = 8) -> List[dict]:
+def _parse_ddg_results(html: str) -> List[tuple]:
     results = []
-    seen_urls = set()
-    terms = _build_search_terms(device_info)
+    link_pattern = re.compile(
+        r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        re.DOTALL
+    )
+    snippet_pattern = re.compile(
+        r'class="result__snippet"[^>]*>(.*?)</(?:a|div)',
+        re.DOTALL
+    )
+    alt_link = re.compile(
+        r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        re.DOTALL
+    )
 
-    for term in terms:
-        query = urllib.parse.quote(f"{term} exploit poc CVE")
-        url = f"https://www.reddit.com/search.json?q={query}&limit=5&sort=new&t=year&restrict_sr=on"
-        data = _fetch_json(url, headers={"User-Agent": "CellInspector/1.0 (Reddit Deep Scan)"})
-        if not data:
-            continue
+    links = link_pattern.findall(html) or alt_link.findall(html)
+    snippets = [re.sub(r'<[^>]+>', '', s).strip() for s in snippet_pattern.findall(html)]
 
-        for child in data.get("data", {}).get("children", []):
-            item = child.get("data", {})
-            link = item.get("permalink", "")
-            full_url = f"https://www.reddit.com{link}"
-            if full_url in seen_urls:
-                continue
-            seen_urls.add(full_url)
-            title = (item.get("title") or "").strip()
-            if not title:
-                continue
-            subreddit = item.get("subreddit", "")
-            score = item.get("score", 0)
-            num_comments = item.get("num_comments", 0)
-            selftext = (item.get("selftext") or "")[:200]
+    for idx, (href, title_text) in enumerate(links):
+        clean_title = re.sub(r'<[^>]+>', '', title_text).strip()
+        snippet = snippets[idx] if idx < len(snippets) else ""
+        if clean_title:
+            results.append((href, clean_title, snippet))
 
-            results.append({
-                "title": title,
-                "url": full_url,
-                "subreddit": subreddit,
-                "score": score,
-                "comments": num_comments,
-                "snippet": selftext,
-                "source": "Reddit",
-            })
-        time.sleep(1)
-
-    results.sort(key=lambda x: -x["score"])
-    return results[:max_results]
-
-
-def _pastebin_search(device_info: dict, max_results: int = 8) -> List[dict]:
-    results = []
-    seen_urls = set()
-    terms = _build_search_terms(device_info)
-
-    for term in terms:
-        query = urllib.parse.quote(f"{term} exploit")
-        url = f"https://psbdmp.ws/api/search/{query}"
-        data = _fetch_json(url)
-        if not data:
-            time.sleep(1)
-            continue
-
-        items = data if isinstance(data, list) else data.get("data", []) if isinstance(data, dict) else []
-        for item in items[:5]:
-            if isinstance(item, dict):
-                mp_id = item.get("id", "")
-                if not mp_id:
-                    continue
-                full_url = f"https://pastebin.com/{mp_id}"
-                if full_url in seen_urls:
-                    continue
-                seen_urls.add(full_url)
-                results.append({
-                    "id": mp_id,
-                    "url": full_url,
-                    "title": item.get("title", f"Paste #{mp_id}"),
-                    "snippet": (item.get("content", "") or "")[:200] if isinstance(item.get("content"), str) else "",
-                    "source": "Pastebin",
-                })
-        time.sleep(1.5)
-
-    return results[:max_results]
-
-
-def _web_deep_search(device_info: dict, max_results: int = 8) -> List[dict]:
-    results = []
-    seen_urls = set()
-    terms = _build_search_terms(device_info)
-    android_ver = device_info.get("Android Version", "")
-
-    for term in terms:
-        for extra in ["exploit poc CVE", "exploit breach", "vulnerability 0day"]:
-            query = urllib.parse.quote(f"{term} {android_ver} {extra}")
-            url = f"https://html.duckduckgo.com/html/?q={query}"
-            html = _fetch_text(url)
-            if not html:
-                time.sleep(2)
-                continue
-
-            link_pattern = re.compile(
-                r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-                re.DOTALL
-            )
-            snippet_pattern = re.compile(
-                r'class="result__snippet"[^>]*>(.*?)</(?:a|div)',
-                re.DOTALL
-            )
-
-            links = link_pattern.findall(html)
-            snippets = [re.sub(r'<[^>]+>', '', s).strip() for s in snippet_pattern.findall(html)]
-
-            for idx, (href, title_text) in enumerate(links):
-                clean_title = re.sub(r'<[^>]+>', '', title_text).strip()
-                if href in seen_urls or not clean_title:
-                    continue
-                seen_urls.add(href)
-                snippet = snippets[idx] if idx < len(snippets) else ""
-
-                is_forum = any(d in href.lower() for d in
-                    ["breachforum", "exploit.in", "raidforum", "xss.is",
-                     "cracking", "sinister", "cybercrime", "darkweb",
-                     "0dayforum", "hackforums", "antichat", "infraud"])
-                is_reddit = "reddit.com" in href.lower()
-                is_pastebin = "pastebin.com" in href.lower()
-
-                if is_reddit or is_pastebin:
-                    continue
-
-                source_label = "Forum" if is_forum else "Web"
-
-                results.append({
-                    "title": clean_title,
-                    "url": href,
-                    "snippet": snippet,
-                    "source": source_label,
-                    "is_forum": is_forum,
-                })
-
-            time.sleep(2)
-
-    results.sort(key=lambda x: (0 if x.get("is_forum") else 1, x["title"]))
-    return results[:max_results]
+    return results
 
 
 def _deep_search(device_info: dict) -> dict:
     global DEEP_CACHE, DEEP_CACHE_TIME
     now = time.time()
     if DEEP_CACHE and (now - DEEP_CACHE_TIME) < 300:
-        return {"reddit": DEEP_CACHE.get("reddit", []),
-                "pastebin": DEEP_CACHE.get("pastebin", []),
-                "web": DEEP_CACHE.get("web", [])}
+        return DEEP_CACHE
 
-    model = device_info.get("Model", "Unknown")
-    android_ver = device_info.get("Android Version", "Unknown")
+    model = device_info.get("Model", "")
+    android_ver = device_info.get("Android Version", "")
+    manufacturer = device_info.get("Manufacturer", "")
+    product = device_info.get("Product Name", "")
+
+    clean_model = re.sub(r"[^a-zA-Z0-9\s]", "", model).strip() if model else ""
+    clean_product = re.sub(r"[^a-zA-Z0-9\s]", "", product).strip() if product else ""
+
+    keywords = [t for t in [f"android {android_ver}", clean_model, manufacturer, clean_product] if t]
 
     console.print(f"\n[bold yellow]\U0001f50d Deep Internet Search[/]")
-    console.print(f"  [dim]Searching Reddit, Pastebin, and web forums for: {model} / Android {android_ver}[/]\n")
+    console.print(f"  [dim]Searching web, Reddit, Pastebin, and forums for: {model} / Android {android_ver}[/]\n")
 
-    console.print("  [dim]Searching Reddit...[/]")
-    reddit = _reddit_search(device_info)
+    test_html = _fetch_text("https://html.duckduckgo.com/html/?q=test", timeout=4)
+    if not test_html:
+        console.print("  [yellow]Web search no disponible (DuckDuckGo bloqueado), saltando...[/]")
+        DEEP_CACHE = {"Reddit": [], "Pastebin": [], "Forum": [], "Web": []}
+        DEEP_CACHE_TIME = now
+        return DEEP_CACHE
 
-    console.print("  [dim]Searching Pastebin...[/]")
-    pastebin = _pastebin_search(device_info)
+    categorized = {"Reddit": [], "Pastebin": [], "Forum": [], "Web": []}
+    seen_urls = set()
 
-    console.print("  [dim]Searching web & breach forums...[/]")
-    web = _web_deep_search(device_info)
+    for dork, dork_cat in DEEP_DORKS:
+        for keyword in keywords[:1]:
+            q = dork.format(term=keyword)
+            query = urllib.parse.quote(q)
+            url = f"https://html.duckduckgo.com/html/?q={query}"
+            try:
+                html = _fetch_text(url, timeout=5)
+                if not html:
+                    continue
+                results = _parse_ddg_results(html)
+                for href, title, snippet in results:
+                    if href in seen_urls:
+                        continue
+                    seen_urls.add(href)
+                    for pat, label in [("reddit", "Reddit"), ("pastebin", "Pastebin"),
+                                       ("breachforums", "Forum"), ("exploit.in", "Forum"),
+                                       ("xss.is", "Forum"), ("hackforums", "Forum")]:
+                        if pat in href.lower():
+                            target_cat = label
+                            break
+                    else:
+                        target_cat = dork_cat
+                    categorized[target_cat].append({
+                        "title": title,
+                        "url": href,
+                        "snippet": snippet,
+                        "source": target_cat,
+                        "is_forum": target_cat == "Forum",
+                    })
+            except Exception:
+                pass
+            time.sleep(0.5)
 
-    DEEP_CACHE = {"reddit": reddit, "pastebin": pastebin, "web": web}
+    for cat in categorized:
+        categorized[cat].sort(key=lambda x: x["title"])
+        categorized[cat] = categorized[cat][:6]
+
+    total = sum(len(v) for v in categorized.values())
+    console.print(f"  [dim]Total: {total} resultados (Reddit: {len(categorized['Reddit'])}, "
+                  f"Pastebin: {len(categorized['Pastebin'])}, "
+                  f"Foros: {len(categorized['Forum'])}, "
+                  f"Web: {len(categorized['Web'])})[/]")
+
+    DEEP_CACHE = categorized
     DEEP_CACHE_TIME = now
-
-    return {"reddit": reddit, "pastebin": pastebin, "web": web}
+    return categorized
 
 
 def _display_github_results(display_repos: List[dict]):
@@ -473,56 +420,32 @@ def _display_deep_results(deep: dict):
     from rich.panel import Panel
     from rich import box
 
-    reddit = deep.get("reddit", [])
-    pastebin = deep.get("pastebin", [])
-    web = deep.get("web", [])
+    categories = [
+        ("Reddit", "\U0001f4dd", "orange1"),
+        ("Pastebin", "\U0001f4cb", "yellow"),
+        ("Forum", "\U0001f6e1", "red"),
+        ("Web", "\U0001f310", "blue"),
+    ]
 
-    total = len(reddit) + len(pastebin) + len(web)
+    total = sum(len(deep.get(cat, [])) for cat, _, _ in categories)
     if total == 0:
         console.print("\n[bold yellow]\U0001f50d Deep scan: no se encontraron resultados adicionales.[/]")
         return
 
     console.print(f"\n[bold magenta]\U0001f4e1 Deep Scan Results ({total} encontrados)[/]\n")
 
-    if reddit:
-        console.print(f"[bold orange1]\U0001f4dd Reddit ({len(reddit)})[/]")
-        for i, post in enumerate(reddit[:5], 1):
+    for cat, icon, color in categories:
+        items = deep.get(cat, [])
+        if not items:
+            continue
+        console.print(f"[bold {color}]{icon} {cat} ({len(items)})[/]")
+        for i, item in enumerate(items[:5], 1):
+            snippet = f"\n[dim]{item.get('snippet', '')[:150]}[/]" if item.get("snippet") else ""
             panel = Panel(
-                f"[bold]{post['title']}[/]\n"
-                f"[dim]r/{post['subreddit']}  \u2b50 {post['score']}  \U0001f4ac {post['comments']}[/]\n"
-                f"[link={post['url']}]\U0001f517 {post['url']}[/]",
-                title=f"Reddit #{i}",
-                border_style="orange1",
-                box=box.ROUNDED,
-                padding=(1, 2),
-            )
-            console.print(panel)
-            console.print()
-
-    if pastebin:
-        console.print(f"[bold yellow]\U0001f4cb Pastebin ({len(pastebin)})[/]")
-        for i, p in enumerate(pastebin[:5], 1):
-            panel = Panel(
-                f"[bold]{p['title']}[/]\n"
-                f"[link={p['url']}]\U0001f517 {p['url']}[/]",
-                title=f"Pastebin #{i}",
-                border_style="yellow",
-                box=box.ROUNDED,
-                padding=(1, 2),
-            )
-            console.print(panel)
-            console.print()
-
-    if web:
-        console.print(f"[bold blue]\U0001f310 Web & Forums ({len(web)})[/]")
-        for i, w in enumerate(web[:5], 1):
-            source_tag = "[red]\U0001f6e1 Forum[/]" if w.get("is_forum") else "[blue]\U0001f310 Web[/]"
-            snippet = f"\n[dim]{w['snippet'][:150]}[/]" if w.get("snippet") else ""
-            panel = Panel(
-                f"{source_tag} [bold]{w['title']}[/]{snippet}\n"
-                f"[link={w['url']}]\U0001f517 {w['url']}[/]",
-                title=f"Web #{i}",
-                border_style="blue",
+                f"[bold]{item['title']}[/]{snippet}\n"
+                f"[link={item['url']}]\U0001f517 {item['url']}[/]",
+                title=f"{cat} #{i}",
+                border_style=color,
                 box=box.ROUNDED,
                 padding=(1, 2),
             )

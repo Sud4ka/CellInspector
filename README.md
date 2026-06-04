@@ -176,11 +176,14 @@ Además de la búsqueda en GitHub, ejecuta:
 
 | Fuente | API/Método | Resultados |
 |--------|-----------|------------|
-| 🔴 Reddit | `reddit.com/search.json` | Posts con términos de exploit/CVE para el dispositivo |
-| 📋 Pastebin | `psbdmp.ws/api/search` | Pastes con código de exploit o PoCs |
-| 🌐 Web/Foros | DuckDuckGo HTML | Resultados con énfasis en breach forums, exploit.in, xss.is |
+| 🔴 Reddit | DuckDuckGo `site:reddit.com` | Posts sobre exploits/CVE para el dispositivo |
+| 📋 Pastebin | DuckDuckGo `site:pastebin.com` | Pastes con código de exploit |
+| 🛡️ Foros | DuckDuckGo con dorks | BreachForums, exploit.in, xss.is, hackforums |
+| 🌐 Web | DuckDuckGo | Búsqueda general de exploits/PoC en internet |
 
-Cada fuente se muestra en paneles con su propio color (naranja para Reddit, amarillo para Pastebin, azul para web).
+**Nota:** El deep scan depende de DuckDuckGo. Si no está accesible desde tu red, el deep scan se omitirá automáticamente sin bloquear el análisis.
+
+Cada fuente se muestra en paneles con su propio color (naranja para Reddit, amarillo para Pastebin, rojo para foros, azul para web).
 
 ### 📄 Modo Reporte (`-r` / `--report`)
 
