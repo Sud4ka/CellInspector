@@ -7,7 +7,7 @@ import atexit
 import argparse
 from typing import List, Tuple, Optional
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 from core.display import (
     console,
@@ -639,7 +639,7 @@ def run_all(verbose: bool = False, wireless: bool = False, offline: bool = False
         from modules.pegasus_detector import run_pegasus_detect
 
         console.print("\n[bold]--- Zero-Day Scan ---[/]")
-        run_zero_day_check(deep=False)
+        run_zero_day_check(deep=False, offline=offline)
 
         console.print("\n[bold]--- Pegasus Detection ---[/]")
         run_pegasus_detect()
@@ -694,7 +694,7 @@ def main():
 Examples:
    %(prog)s                          Run full device security scan
   %(prog)s --0days                  Scan GitHub for active PoC exploits
-  %(prog)s --0days --deep           Deep scan: Reddit, Pastebin, forums + GitHub
+  %(prog)s --0days --deep           Deep scan: GitHub Code + NVD + CISA KEV + Exploit-DB + Reddit + GitHub
   %(prog)s --pegasus-detect         Scan device for Pegasus spyware indicators
   %(prog)s --all                    Run full scan + zero-day + pegasus + VPN/Proxy
   %(prog)s --all --json             Full scan with JSON report export
@@ -722,7 +722,7 @@ Examples:
         "--deep",
         action="store_true",
         dest="deep_scan",
-        help="Deep scan: search Reddit, Pastebin, and web forums for PoC exploits (use with --0days)",
+        help="Deep scan: GitHub Code Search + NVD CVE + CISA KEV + Exploit-DB + Reddit JSON (use with --0days)",
     )
     parser.add_argument(
         "-f", "--fixall",
@@ -785,7 +785,7 @@ Examples:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="Skip all internet-dependent checks (C2, GitHub, DuckDuckGo)",
+        help="Skip all internet-dependent checks (C2, GitHub, NVD, CISA, Exploit-DB, Reddit)",
     )
     parser.add_argument(
         "--live",
@@ -847,7 +847,7 @@ Examples:
         if not args.no_banner:
             print_banner()
         wait_for_device_or_exit()
-        run_zero_day_check(deep=args.deep_scan)
+        run_zero_day_check(deep=args.deep_scan, offline=args.offline)
     elif args.pegasus_detect:
         if not args.no_banner:
             print_banner()

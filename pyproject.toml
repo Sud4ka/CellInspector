@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cellinspector"
-version = "1.1.0"
+version = "1.2.0"
 description = "Mobile Device Security Auditor via ADB"
 readme = "README.md"
 requires-python = ">=3.8"

@@ -15,7 +15,7 @@
 | 📡 **Monitor** | `-m` / `--monitor` | Escaneo en tiempo real cada N segundos |
 | 🕵️ **Pegasus detect** | `--pegasus-detect` | Detecta indicadores del spyware Pegasus en el dispositivo |
 | 🚨 **Zero-Day scan** | `--0days` | Busca PoCs/exploits activos en GitHub para tu dispositivo |
-| 🌐 **Deep scan** | `--0days --deep` | Búsqueda extendida en Reddit, Pastebin y foros especializados |
+| 🌐 **Deep scan** | `--0days --deep` | 5 fuentes: GitHub Code Search + NVD CVE + CISA KEV + Exploit-DB + Reddit JSON |
 | 🚀 **Full analysis** | `--all` | Escaneo completo + Zero-Day + Pegasus + VPN/Proxy (con o sin internet) |
 | 📡 **Live logcat** | `--live` | Streaming de logcat en tiempo real con alertas coloreadas |
 | 📄 **Reporte Markdown** | `-r` / `--report` | Genera reporte Markdown en `reports/` |
@@ -184,12 +184,16 @@ Utiliza los indicadores STIX2 del proyecto **MVT (Mobile Verification Toolkit)**
 
 **Cómo funciona:**
 1. Descarga archivos `.stix2` desde los repositorios oficiales de MVT y AmnestyTech
-2. Parsea los patrones STIX2 (dominios, IPs, hashes SHA256, package names, rutas de archivo)
-3. Clasifica cada IOC por tipo con el sistema de **confianza** (SHA256 → CRITICAL, proceso genérico → LOW)
-4. Cruza contra el dispositivo vía ADB (procesos, paquetes, archivos, hashes de system binaries)
+2. Parsea los patrones STIX2 (dominios, IPs, hashes SHA256, package names, rutas de archivo) — **filtra valores genéricos** (`*.apk`, `<name>`, `${path}`, etc.)
+3. Cruza contra el dispositivo con **matching estricto**:
+   - **Procesos**: match exacto contra la columna NAME de `ps -A` (no substring)
+   - **Paquetes**: match exacto contra `pm list packages`
+   - **C2 dominios**: resuelve el dominio y busca conexión **activa** (`/proc/net/tcp` estado ESTABLISHED / TIME_WAIT) a la IP resultante — nunca `nslookup` solo
+   - **Hashes**: SHA256 de system binaries
+4. Cada familia se evalúa con el **motor de corroboración multi-indicador** (ver siguiente sección)
 5. Muestra overall confidence score y recomendación contextual
 
-**Importante:** Los archivos STIX2 contienen indicadores observacionales (procesos vistos durante investigaciones) y no todos son firmas exclusivas de malware. CellInspector aplica **filtros de exclusión** (procesos conocidos de Android, nombres cortos) y **confidence scoring** para minimizar falsos positivos.
+**Importante:** Los archivos STIX2 contienen indicadores observacionales (procesos vistos durante investigaciones) y no todos son firmas exclusivas de malware. CellInspector aplica **filtros de exclusión** (procesos conocidos de Android, nombres cortos, valores genéricos de STIX2) y **corroboración multi-indicador** para minimizar falsos positivos.
 
 **Crédito:** Los indicadores STIX2 son mantenidos por el proyecto [MVT](https://github.com/mvt-project/mvt) de [Amnesty International](https://www.amnesty.org). Distribuidos bajo licencia MIT.
 
@@ -296,16 +300,25 @@ python3 cellinspector.py --monitor --interval 30   # cada 30 segundos
 python3 cellinspector.py --pegasus-detect
 ```
 
-Analiza el dispositivo en busca de **6 tipos de indicadores** del spyware Pegasus de NSO Group:
+Analiza el dispositivo en busca de **7 tipos de indicadores** del spyware Pegasus de NSO Group:
 
-| Capa | Check | Método | Confianza |
-|------|-------|--------|-----------|
-| 1️⃣ | **Procesos** | Busca procesos con nombres conocidos de Pegasus (`pegasus`, `pexd`, etc.) | LOW (filtra procesos conocidos de Android y nombres <4 chars) |
-| 2️⃣ | **Paquetes** | Lista paquetes instalados contra IOC database (match exacto) | HIGH |
-| 3️⃣ | **Archivos** | Verifica existencia de rutas conocidas (`/data/local/tmp/pex`) | MEDIUM |
-| 4️⃣ | **Módulos kernel** | Inspecciona módulos cargados (`lsmod`) | MEDIUM |
-| 5️⃣ | **Hash matching** | SHA256 de system binaries contra hashes de muestras reales | CRITICAL |
-| 6️⃣ | **C2 servers** | Resolución DNS y conectividad con servidores C2 | HIGH |
+| Capa | Check | Método | Confianza base |
+|------|-------|--------|----------------|
+| 1️⃣ | **Hash matching** | SHA256 de system binaries contra hashes de muestras reales (Lookout / Citizen Lab) | CRITICAL (95) |
+| 2️⃣ | **Procesos** | Match exacto contra columna NAME de `ps -A` (`pegasus`, `pexd`) | HIGH (75) |
+| 3️⃣ | **Paquetes** | Match exacto contra `pm list packages` + confirmación con `pm path` | HIGH (80) |
+| 4️⃣ | **C2 servers** | Conexión **activa** en `/proc/net/tcp` (ESTABLISHED / TIME_WAIT) hacia IPs C2 de Citizen Lab. **Ya no usa `nslookup`** — la resolución DNS sola disparó miles de FPs en v1.1.0. | HIGH (80) |
+| 5️⃣ | **Archivos** | Verifica existencia de rutas conocidas (`/data/local/tmp/pex`) | MEDIUM (55) |
+| 6️⃣ | **Módulos kernel** | Match exacto en `lsmod` / `/proc/modules` | MEDIUM (55) |
+| 7️⃣ | **System properties** | `getprop` con valor sospechoso (timezone forzado, build keys dev/test) | LOW (25) |
+
+**Reducción de falsos positivos (v1.2.0):**
+
+- ❌ **Eliminado `nslookup`** — un dominio C2 que resuelve vía DNS público no es evidencia de infección (la mayoría están sinkholeados). Solo se reportan conexiones TCP activas.
+- ❌ **Eliminados paquetes genéricos** — `com.android.systemupdate`, `com.android.secure`, `com.google.android.update`, `com.cellular.manager`, `com.android.settings.security` colisionaban con apps legítimas de OEM/MDM. Causaban ~80% de los FPs en v1.1.0.
+- ❌ **Eliminado substring match de procesos** — `value in line` se reemplazó por match exacto de columna.
+- ❌ **Eliminada `file_path` en `/system/app/SystemUpdate`** — existe en Samsung/Xiaomi stock.
+- ✅ **Corroboración multi-indicador** — un único match HIGH baja a MEDIUM; hacen falta 2+ clases independientes para escalar.
 
 Cada hallazgo se muestra con su nivel de confianza y la recomendación es contextual:
 - **CRITICAL/HIGH**: Factory reset + cambio de contraseñas
@@ -317,26 +330,29 @@ Cada hallazgo se muestra con su nivel de confianza y la recomendación es contex
 ### 🚨 Zero-Day Exploit Scanner (`--0days`)
 
 ```bash
-python3 cellinspector.py --0days           # Solo GitHub
-python3 cellinspector.py --0days --deep    # GitHub + Reddit + Pastebin + foros
+python3 cellinspector.py --0days                    # Solo GitHub
+python3 cellinspector.py --0days --deep             # + NVD, CISA KEV, Exploit-DB, Reddit, GitHub Code
+python3 cellinspector.py --0days --deep --offline   # Deep deshabilitado (sin internet)
 ```
 
-Busca PoCs/exploits activos para tu dispositivo:
+Busca PoCs/exploits activos para tu dispositivo combinando **6 fuentes de threat intelligence**:
 
 | Modo | Fuentes |
 |------|---------|
-| 🐙 **Normal** (`--0days`) | GitHub (API de repositorios) |
-| 🌐 **Deep** (`--0days --deep`) | GitHub + Reddit + Pastebin + DuckDuckGo (breach forums, exploit.in, etc.) |
+| 🐙 **Normal** (`--0days`) | 🐙 GitHub Repo Search |
+| 🌐 **Deep** (`--0days --deep`) | 🐙 GitHub Repo + 🐙 GitHub Code* + 📜 NVD CVE + 🚨 CISA KEV + 💣 Exploit-DB + 🟠 Reddit JSON |
+
+\* GitHub Code Search **requiere** `GITHUB_TOKEN`; se omite silenciosamente sin él.
 
 #### Normal (`--0days`)
 
 | Paso | Acción |
 |------|--------|
 | 1️⃣ | Detecta modelo, versión de Android, API level, parche de seguridad |
-| 2️⃣ | Genera **~80 dorks multilingües** (EN, PT, ES, FR, IT, RU, ZH, JA, KO) y selecciona 12-15 cubriendo todos los idiomas |
-| 3️⃣ | Consulta GitHub API con cada dork |
-| 4️⃣ | **Verifica HTTP 200** — en paralelo (10 threads) descarta repos que devuelvan 404 |
-| 5️⃣ | Filtra por relevancia (CVE, exploit, RCE, root, escalada de privilegios, y keywords en 9 idiomas) |
+| 2️⃣ | Genera **~80 dorks multilingües** (EN, PT, ES, FR, IT, RU, ZH, JA, KO) combinando modelo + fabricante + Android version |
+| 3️⃣ | Selecciona 12 dorks balanceados y consulta la API de repos de GitHub |
+| 4️⃣ | **Verifica HTTP 200** en paralelo (10 threads) — descarta 404s |
+| 5️⃣ | Filtra por relevancia (CVE, exploit, RCE, root, escalada de privilegios, palabras en 9 idiomas + match con tu modelo/Android version) |
 | 6️⃣ | Muestra resultados con enlace, estrellas, lenguaje y fecha |
 
 Idiomas de los dorks:
@@ -371,26 +387,48 @@ Salida:
 
 #### Deep Scan (`--0days --deep`)
 
-Además de la búsqueda en GitHub, ejecuta:
+**v1.2.0 reemplaza el scraper HTML de DuckDuckGo** (que llevaba años roto) por **5 fuentes estructuradas** con endpoints públicos y rate-limits respetables:
 
-| Fuente | API/Método | Resultados |
-|--------|-----------|------------|
-| 🔴 Reddit | DuckDuckGo `site:reddit.com` | Posts sobre exploits/CVE para el dispositivo |
-| 📋 Pastebin | DuckDuckGo `site:pastebin.com` | Pastes con código de exploit |
-| 🛡️ Foros | DuckDuckGo con dorks | BreachForums, exploit.in, xss.is, hackforums |
-| 🌐 Web | DuckDuckGo | Búsqueda general de exploits/PoC en internet |
+| # | Fuente | API | Qué encuentra | Costo / Rate-limit |
+|---|--------|-----|---------------|---------------------|
+| 1️⃣ | **GitHub Code Search** | `/search/code?q=...` | El **código** real del PoC (no solo repos que lo mencionan) | Requiere `GITHUB_TOKEN` (obligatorio para code search) |
+| 2️⃣ | **NVD CVE 2.0** | `services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=...` | CVEs oficiales con CVSS score y descripción | Sin key: 5 req/30 s · con `NVD_API_KEY`: 50 req/30 s |
+| 3️⃣ | **CISA KEV** | `cisa.gov/.../known_exploited_vulnerabilities.json` | CVEs **explotados activamente** en campo (el catálogo de oro) | Sin auth, cacheado 24 h |
+| 4️⃣ | **Exploit-DB** | CSV público mirror en GitLab | EDB-ID, autor, plataforma, ruta del exploit | Sin auth, CSV (~6 MB) cacheado 24 h |
+| 5️⃣ | **Reddit JSON** | `reddit.com/r/{sub}/search.json` | Posts en r/netsec, r/ReverseEngineering, r/AndroidSecurity, r/androiddev | Sin auth, ~10 req/min con cortesía |
 
-**Nota:** El deep scan depende de DuckDuckGo. Si no está accesible desde tu red, el deep scan se omitirá automáticamente sin bloquear el análisis.
+**Ejecución en paralelo:** las 5 fuentes se consultan con `ThreadPoolExecutor` (queries × fuentes en paralelo), con caché local y dedup por URL.
 
-**GitHub Token (opcional):** Para evitar límites de tasa (60 req/h sin autenticar vs. 5000 autenticado), exporta tu token antes de ejecutar:
+**Ejemplo de salida combinada:**
+```
+📡 Deep Scan Results (42 total, 5 source(s))
 
-```bash
-export GITHUB_TOKEN="ghp_tu_token_aqui"
+▸ CISA KEV (3)            ← CVEs explotados activamente, máxima prioridad
+▸ NVD (12)                 ← CVSS score, descripción oficial
+▸ Exploit-DB (4)           ← EDB-XXXXX, autor, plataforma
+▸ GitHub Code (2)          ← código real del PoC
+▸ GitHub Repo (8)          ← repos con PoC
+▸ Reddit r/netsec (5)      ← write-ups y discusiones
+▸ Reddit r/AndroidSecurity (3)
+▸ Reddit r/ReverseEngineering (3)
+▸ Reddit r/androiddev (2)
 ```
 
-Puedes generar un token en https://github.com/settings/tokens (no requiere permisos especiales para búsqueda pública).
+**API Keys opcionales (mejoran rate-limits):**
 
-Cada fuente se muestra en paneles con su propio color (naranja para Reddit, amarillo para Pastebin, rojo para foros, azul para web).
+```bash
+export GITHUB_TOKEN="ghp_..."     # activa GitHub Code Search + 5000 req/h en repos
+export NVD_API_KEY="..."          # 50 req/30s en NVD en vez de 5
+```
+
+`GITHUB_TOKEN` se puede generar en https://github.com/settings/tokens (no requiere permisos especiales para búsqueda pública). `NVD_API_KEY` se solicita gratis en https://nvd.nist.gov/developers/request-an-api-key.
+
+**Con `--offline`:** las 5 fuentes se omiten y el deep scan solo muestra un mensaje informativo. El scan base (GitHub repos) sigue funcionando porque ya estaba dentro del escáner principal.
+
+**Cambios clave vs v1.1.0:**
+- ❌ Eliminado scraping HTML de DuckDuckGo (devolvía CAPTCHA o vacío en 95% de los casos).
+- ❌ Eliminado el slice `keywords[:1]` — antes solo se usaba **1 keyword**; ahora se usan **todas** (modelo + fabricante + Android version).
+- ✅ Multi-keyword expansion × 8 templates de dork = **~80 queries** por dispositivo.
 
 ### 📄 Modo Reporte (`-r` / `--report`)
 
@@ -548,11 +586,13 @@ CellInspector/
 │   ├── 📏 severity.py               # Enum Severity
 │   ├── 📖 guides.py                 # Guías localizadas paso a paso
 │   ├── 🗃️ ioc_db.py                 # IOC database general + stalkerware
-│   ├── 🦠 pegasus_ioc.py            # IOC database de Pegasus (hashes, C2, packages, procesos)
+│   ├── 🦠 pegasus_ioc.py            # IOC database de Pegasus (curado, con fuentes citadas)
 │   ├── 🔄 ioc_updater.py            # Auto-update: MalwareBazaar, AlienVault OTX, CISA
 │   ├── 🛡️ vt_integration.py         # VirusTotal API v3 (hash lookup con rate limiting)
 │   ├── 🧬 mitre_attack.py           # MITRE ATT&CK for Mobile mapping (T1437, T1412, etc.)
-│   └── 🎯 confidence.py             # Confidence scoring engine (HIGH/LOW/SKIP según tipo de IOC)
+│   ├── 🎯 confidence.py             # Confidence scoring engine (HIGH/LOW/SKIP según tipo de IOC)
+│   ├── 🧩 findings.py               # Motor de corroboración multi-indicador (Nivel 2 de confianza)
+│   └── 🌐 threat_intel.py           # Clientes unificados: GitHub Code/Repo, NVD, CISA KEV, Exploit-DB, Reddit JSON
 ├── modules/
 │   ├── 🌐 network_analyzer.py       # Conexiones de red
 │   ├── ⚙️ process_scanner.py        # Procesos
@@ -574,9 +614,11 @@ CellInspector/
 
 ## 🎯 Confidence Engine
 
-### `core/confidence.py`
+CellInspector v1.2.0 tiene **dos niveles** de filtrado de confianza:
 
-Motor de confianza que clasifica cada indicador por tipo y valor:
+### Nivel 1 — `core/confidence.py` (score por tipo de IOC)
+
+Motor de confianza que clasifica cada indicador individual por tipo y valor:
 
 | Tipo IOC | Confianza Base | Reglas Especiales |
 |----------|---------------|-------------------|
@@ -589,6 +631,39 @@ Motor de confianza que clasifica cada indicador por tipo y valor:
 | `url` | **MEDIUM** (50) | — |
 
 **Known Android processes** (90 entradas): `gatekeeperd`, `surfaceflinger`, `zygote`, `servicemanager`, `adbd`, `logd`, `netd`, `vold`, etc. No se marcan como sospechosos.
+
+### Nivel 2 — `core/findings.py` (corroboración multi-indicador)
+
+Una sola coincidencia no es evidencia. El motor de corroboración **agrupa findings por clase independiente** y solo escala la severidad cuando hay al menos 2 indicadores de clases distintas:
+
+| Regla | Resultado |
+|-------|-----------|
+| 1× `CRITICAL` (cualquier clase) | `CRITICAL` |
+| 1× hash match (`CLASS_FILE_HASH`) | `CRITICAL` (es la prueba de infección) |
+| 1× `HIGH` + 1× `MEDIUM` (clases distintas) | `HIGH` |
+| 2× `MEDIUM` (clases distintas) | `HIGH` |
+| 2× `HIGH` (clases distintas) | `CRITICAL` |
+| 1× `HIGH` solo | **baja a `MEDIUM`** (no es suficiente) |
+| 1× `MEDIUM` solo | `MEDIUM` |
+| 1× `LOW` solo | baja a `INFO` |
+| 2× `HIGH` misma clase | `MEDIUM` (no corroboran, son redundantes) |
+
+**Clases independientes** (no se corroboran entre sí): `process`, `package`, `file_path`, `file_hash`, `network`, `kernel`, `system_property`, `other`.
+
+**Ejemplo práctico** — dispositivo infectado con Pegasus 2017-style:
+- 1 proceso `pegasus` corriendo (HIGH, `CLASS_PROCESS`)
+- 1 paquete `com.nso.pegasus` instalado (HIGH, `CLASS_PACKAGE`)
+- 1 conexión TCP activa a `103.207.85.8` (HIGH, `CLASS_NETWORK`)
+- 1 archivo `/data/local/tmp/pex` (MEDIUM, `CLASS_FILE_PATH`)
+
+→ 4 indicadores de **4 clases distintas** → `CRITICAL` corroborado.
+
+**Ejemplo FP evitado** — dispositivo limpio con `alarmmanager` corriendo:
+- `alarmmanager` está en `KNOWN_ANDROID_PROCESSES` → **filtrado en el Nivel 1**, no llega al motor de corroboración.
+
+**Ejemplo FP evitado** — `com.android.systemupdate` instalado en un Samsung:
+- En v1.1.0: HIGH (match contra `PEGASUS_PACKAGES`) → infección falsa.
+- En v1.2.0: el paquete se eliminó de `PEGASUS_PACKAGES` (ver [commit history](https://github.com/Sud4ka/CellInspector/commits/master)) → no se reporta.
 
 ## 🗃️ IOC Databases
 
@@ -643,8 +718,29 @@ Motor de confianza que clasifica cada indicador por tipo y valor:
 ## 🙌 Agradecimientos
 
 - **[MVT (Mobile Verification Toolkit)](https://github.com/mvt-project/mvt)** de **Amnesty International** — por su increíble trabajo en la recopilación y estandarización de indicadores STIX2 de spyware. Sus IOCs (licencia MIT) potencian el módulo `--mvt-check` de CellInspector. El trabajo de Amnesty International en la investigación de spyware de estado-nación es fundamental para la seguridad digital global.
+- **[NIST NVD](https://nvd.nist.gov/)** — por la API pública de CVEs que impulsa la búsqueda de vulnerabilidades en el deep scan.
+- **[CISA](https://www.cisa.gov)** — por el feed de Known Exploited Vulnerabilities (KEV) que filtra los CVEs explotados activamente en campo.
+- **[Exploit-DB](https://www.exploit-db.com/)** — por su base de datos pública de exploits, espejada en GitLab.
 - **[AbuseCH](https://abuse.ch)** — por MalwareBazaar y sus feeds de malware.
 - **[AlienVault OTX](https://otx.alienvault.com)** — por su plataforma abierta de inteligencia de amenazas.
-- **[CISA](https://www.cisa.gov)** — por el feed de Known Exploited Vulnerabilities.
 - **[VirusTotal](https://www.virustotal.com)** — por su API de análisis de malware.
+
+---
+
+## 🧪 Tests
+
+```bash
+python3 tests/smoke_test.py
+```
+
+18 tests unitarios sin red ni ADB — cubren:
+- Reglas de corroboración multi-indicador (las 7 reglas)
+- Parsers estrictos (`ps -A`, `/proc/net/tcp`, IP → little-endian hex)
+- Filtro de valores genéricos en STIX2 (`*.apk`, `<name>`, `${path}`)
+- `build_dorks` con todas las keywords (no slice `[:1]`)
+- Imports de todos los módulos del proyecto
+
+```text
+Ran 18 tests in 0.23s — OK
+```
 - **Comunidad open source** — a todos los investigadores que contribuyen a la seguridad móvil.
